@@ -1,13 +1,12 @@
 package prommetrics
 
 import (
-	"net"
-	"strconv"
-
 	gp "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"net"
+	"strconv"
 )
 
 const rpcPath = commonPath
@@ -22,10 +21,6 @@ var (
 		[]string{"name", "path", "code"},
 	)
 )
-
-func RegistryRpc() {
-	registry.MustRegister(rpcCounter)
-}
 
 func RpcInit(cs []prometheus.Collector, listener net.Listener) error {
 	reg := prometheus.NewRegistry()
@@ -48,25 +43,25 @@ func GetGrpcServerMetrics() *gp.ServerMetrics {
 	return grpcMetrics
 }
 
-func GetGrpcCusMetrics(registerName string, discovery *config.Discovery) []prometheus.Collector {
+func GetGrpcCusMetrics(registerName string, share *config.Share) []prometheus.Collector {
 	switch registerName {
-	case discovery.RpcService.MessageGateway:
+	case share.RpcRegisterName.MessageGateway:
 		return []prometheus.Collector{OnlineUserGauge}
-	case discovery.RpcService.Msg:
+	case share.RpcRegisterName.Msg:
 		return []prometheus.Collector{
 			SingleChatMsgProcessSuccessCounter,
 			SingleChatMsgProcessFailedCounter,
 			GroupChatMsgProcessSuccessCounter,
 			GroupChatMsgProcessFailedCounter,
 		}
-	case discovery.RpcService.Push:
+	case share.RpcRegisterName.Push:
 		return []prometheus.Collector{
 			MsgOfflinePushFailedCounter,
 			MsgLoneTimePushCounter,
 		}
-	case discovery.RpcService.Auth:
+	case share.RpcRegisterName.Auth:
 		return []prometheus.Collector{UserLoginCounter}
-	case discovery.RpcService.User:
+	case share.RpcRegisterName.User:
 		return []prometheus.Collector{UserRegisterCounter}
 	default:
 		return nil

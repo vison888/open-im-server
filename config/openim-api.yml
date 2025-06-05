@@ -14,6 +14,6 @@ prometheus:
   autoSetPorts: true
   # Prometheus listening ports, must match the number of api.ports
   # It will only take effect when autoSetPorts is set to false.
-  ports:
+  ports: [ 12002 ]
   # This address can be accessed via a browser
-  grafanaURL:
+  grafanaURL: http://127.0.0.1:13000/

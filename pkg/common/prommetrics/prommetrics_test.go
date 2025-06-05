@@ -14,8 +14,6 @@
 
 package prommetrics
 
-import "testing"
-
 //func TestNewGrpcPromObj(t *testing.T) {
 //	// Create a custom metric to pass into the NewGrpcPromObj function.
 //	customMetric := prometheus.NewCounter(prometheus.CounterOpts{
@@ -69,9 +67,3 @@ import "testing"
 //		})
 //	}
 //}
-
-func TestName(t *testing.T) {
-	RegistryApi()
-	RegistryApi()
-
-}

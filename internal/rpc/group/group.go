@@ -23,28 +23,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/dbbuild"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
-	"google.golang.org/grpc"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
-	"github.com/openimsdk/open-im-server/v3/pkg/callbackstruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/common"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database/mgo"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
 	"github.com/openimsdk/open-im-server/v3/pkg/localcache"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
+	"github.com/openimsdk/open-im-server/v3/pkg/callbackstruct"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
 	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
 	"github.com/openimsdk/open-im-server/v3/pkg/notification/grouphash"
 	"github.com/openimsdk/protocol/constant"
-	pbconv "github.com/openimsdk/protocol/conversation"
+	pbconversation "github.com/openimsdk/protocol/conversation"
 	pbgroup "github.com/openimsdk/protocol/group"
 	"github.com/openimsdk/protocol/sdkws"
 	"github.com/openimsdk/protocol/wrapperspb"
+	"github.com/openimsdk/tools/db/mongoutil"
+	"github.com/openimsdk/tools/db/redisutil"
 	"github.com/openimsdk/tools/discovery"
 	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/log"
@@ -52,6 +53,7 @@ import (
 	"github.com/openimsdk/tools/mw/specialerror"
 	"github.com/openimsdk/tools/utils/datautil"
 	"github.com/openimsdk/tools/utils/encrypt"
+	"google.golang.org/grpc"
 )
 
 type groupServer struct {
@@ -76,13 +78,12 @@ type Config struct {
 	Discovery          config.Discovery
 }
 
-func Start(ctx context.Context, config *Config, client discovery.Conn, server grpc.ServiceRegistrar) error {
-	dbb := dbbuild.NewBuilder(&config.MongodbConfig, &config.RedisConfig)
-	mgocli, err := dbb.Mongo(ctx)
+func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryRegistry, server *grpc.Server) error {
+	mgocli, err := mongoutil.NewMongoDB(ctx, config.MongodbConfig.Build())
 	if err != nil {
 		return err
 	}
-	rdb, err := dbb.Redis(ctx)
+	rdb, err := redisutil.NewRedisClient(ctx, config.RedisConfig.Build())
 	if err != nil {
 		return err
 	}
@@ -98,15 +99,20 @@ func Start(ctx context.Context, config *Config, client discovery.Conn, server gr
 	if err != nil {
 		return err
 	}
-	userConn, err := client.GetConn(ctx, config.Discovery.RpcService.User)
+
+	//userRpcClient := rpcclient.NewUserRpcClient(client, config.Share.RpcRegisterName.User, config.Share.IMAdminUserID)
+	//msgRpcClient := rpcclient.NewMessageRpcClient(client, config.Share.RpcRegisterName.Msg)
+	//conversationRpcClient := rpcclient.NewConversationRpcClient(client, config.Share.RpcRegisterName.Conversation)
+
+	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return err
 	}
-	msgConn, err := client.GetConn(ctx, config.Discovery.RpcService.Msg)
+	msgConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Msg)
 	if err != nil {
 		return err
 	}
-	conversationConn, err := client.GetConn(ctx, config.Discovery.RpcService.Conversation)
+	conversationConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Conversation)
 	if err != nil {
 		return err
 	}
@@ -151,15 +157,11 @@ func (g *groupServer) NotificationUserInfoUpdate(ctx context.Context, req *pbgro
 }
 
 func (g *groupServer) CheckGroupAdmin(ctx context.Context, groupID string) error {
-	if !authverify.IsAdmin(ctx) {
-		members, err := g.db.FindGroupMembers(ctx, groupID, []string{mcontext.GetOpUserID(ctx)})
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
+		groupMember, err := g.db.TakeGroupMember(ctx, groupID, mcontext.GetOpUserID(ctx))
 		if err != nil {
 			return err
 		}
-		if len(members) == 0 {
-			return errs.ErrNoPermission.WrapMsg("op user not in group")
-		}
-		groupMember := members[0]
 		if !(groupMember.RoleLevel == constant.GroupOwner || groupMember.RoleLevel == constant.GroupAdmin) {
 			return errs.ErrNoPermission.WrapMsg("no group owner or admin")
 		}
@@ -207,7 +209,7 @@ func (g *groupServer) CreateGroup(ctx context.Context, req *pbgroup.CreateGroupR
 	if req.OwnerUserID == "" {
 		return nil, errs.ErrArgs.WrapMsg("no group owner")
 	}
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 	userIDs := append(append(req.MemberUserIDs, req.AdminUserIDs...), req.OwnerUserID)
@@ -311,7 +313,7 @@ func (g *groupServer) CreateGroup(ctx context.Context, req *pbgroup.CreateGroupR
 }
 
 func (g *groupServer) GetJoinedGroupList(ctx context.Context, req *pbgroup.GetJoinedGroupListReq) (*pbgroup.GetJoinedGroupListResp, error) {
-	if err := authverify.CheckAccess(ctx, req.FromUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.FromUserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 	total, members, err := g.db.PageGetJoinGroup(ctx, req.FromUserID, req.Pagination)
@@ -372,10 +374,6 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 		return nil, servererrs.ErrDismissedAlready.WrapMsg("group dismissed checking group status found it dismissed")
 	}
 
-	if err := g.checkAdminOrInGroup(ctx, req.GroupID); err != nil {
-		return nil, err
-	}
-
 	userMap, err := g.userClient.GetUsersInfoMap(ctx, req.InvitedUserIDs)
 	if err != nil {
 		return nil, err
@@ -386,9 +384,9 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 	}
 
 	var groupMember *model.GroupMember
-	opUserID := mcontext.GetOpUserID(ctx)
-
-	if !authverify.IsAdmin(ctx) {
+	var opUserID string
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
+		opUserID = mcontext.GetOpUserID(ctx)
 		var err error
 		groupMember, err = g.db.TakeGroupMember(ctx, req.GroupID, opUserID)
 		if err != nil {
@@ -397,6 +395,8 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 		if err := g.PopulateGroupMember(ctx, groupMember); err != nil {
 			return nil, err
 		}
+	} else {
+		opUserID = mcontext.GetOpUserID(ctx)
 	}
 
 	if err := g.webhookBeforeInviteUserToGroup(ctx, &g.config.WebhooksConfig.BeforeInviteUserToGroup, req); err != nil && err != servererrs.ErrCallbackContinue {
@@ -404,7 +404,7 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 	}
 
 	if group.NeedVerification == constant.AllNeedVerification {
-		if !authverify.IsAdmin(ctx) {
+		if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 			if !(groupMember.RoleLevel == constant.GroupOwner || groupMember.RoleLevel == constant.GroupAdmin) {
 				var requests []*model.GroupRequest
 				for _, userID := range req.InvitedUserIDs {
@@ -455,7 +455,10 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 
 	const singleQuantity = 50
 	for start := 0; start < len(groupMembers); start += singleQuantity {
-		end := min(start+singleQuantity, len(groupMembers))
+		end := start + singleQuantity
+		if end > len(groupMembers) {
+			end = len(groupMembers)
+		}
 		currentMembers := groupMembers[start:end]
 
 		if err := g.db.CreateGroup(ctx, nil, currentMembers); err != nil {
@@ -466,8 +469,8 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 			return e.UserID
 		})
 
-		if len(userIDs) != 0 {
-			g.notification.GroupApplicationAgreeMemberEnterNotification(ctx, req.GroupID, req.SendMessage, opUserID, userIDs...)
+		if err = g.notification.GroupApplicationAgreeMemberEnterNotification(ctx, req.GroupID, req.SendMessage, opUserID, userIDs...); err != nil {
+			return nil, err
 		}
 	}
 	return &pbgroup.InviteUserToGroupResp{}, nil
@@ -477,19 +480,6 @@ func (g *groupServer) GetGroupAllMember(ctx context.Context, req *pbgroup.GetGro
 	members, err := g.db.FindGroupMemberAll(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
-	}
-	if !authverify.IsAdmin(ctx) {
-		var inGroup bool
-		opUserID := mcontext.GetOpUserID(ctx)
-		for _, member := range members {
-			if member.UserID == opUserID {
-				inGroup = true
-				break
-			}
-		}
-		if !inGroup {
-			return nil, errs.ErrNoPermission.WrapMsg("opuser not in group")
-		}
 	}
 	if err := g.PopulateGroupMember(ctx, members...); err != nil {
 		return nil, err
@@ -502,7 +492,7 @@ func (g *groupServer) GetGroupAllMember(ctx context.Context, req *pbgroup.GetGro
 }
 
 func (g *groupServer) checkAdminOrInGroup(ctx context.Context, groupID string) error {
-	if authverify.IsAdmin(ctx) {
+	if authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		return nil
 	}
 	opUserID := mcontext.GetOpUserID(ctx)
@@ -576,7 +566,7 @@ func (g *groupServer) KickGroupMember(ctx context.Context, req *pbgroup.KickGrou
 	for i, member := range members {
 		memberMap[member.UserID] = members[i]
 	}
-	isAppManagerUid := authverify.IsAdmin(ctx)
+	isAppManagerUid := authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID)
 	opMember := memberMap[opUserID]
 	for _, userID := range req.KickedUserIDs {
 		member, ok := memberMap[userID]
@@ -689,9 +679,6 @@ func (g *groupServer) getGroupMembersInfo(ctx context.Context, groupID string, u
 
 // GetGroupApplicationList handles functions that get a list of group requests.
 func (g *groupServer) GetGroupApplicationList(ctx context.Context, req *pbgroup.GetGroupApplicationListReq) (*pbgroup.GetGroupApplicationListResp, error) {
-	if err := authverify.CheckAccess(ctx, req.FromUserID); err != nil {
-		return nil, err
-	}
 	var (
 		groupIDs []string
 		err      error
@@ -703,7 +690,7 @@ func (g *groupServer) GetGroupApplicationList(ctx context.Context, req *pbgroup.
 		}
 	} else {
 		req.GroupIDs = datautil.Distinct(req.GroupIDs)
-		if !authverify.IsAdmin(ctx) {
+		if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 			for _, groupID := range req.GroupIDs {
 				if err := g.CheckGroupAdmin(ctx, groupID); err != nil {
 					return nil, err
@@ -785,7 +772,7 @@ func (g *groupServer) GetGroupsInfo(ctx context.Context, req *pbgroup.GetGroupsI
 }
 
 func (g *groupServer) GetGroupApplicationUnhandledCount(ctx context.Context, req *pbgroup.GetGroupApplicationUnhandledCountReq) (*pbgroup.GetGroupApplicationUnhandledCountResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 	groupIDs, err := g.db.FindUserManagedGroupID(ctx, req.UserID)
@@ -836,7 +823,7 @@ func (g *groupServer) GroupApplicationResponse(ctx context.Context, req *pbgroup
 	if !datautil.Contain(req.HandleResult, constant.GroupResponseAgree, constant.GroupResponseRefuse) {
 		return nil, errs.ErrArgs.WrapMsg("HandleResult unknown")
 	}
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		groupMember, err := g.db.TakeGroupMember(ctx, req.GroupID, mcontext.GetOpUserID(ctx))
 		if err != nil {
 			return nil, err
@@ -990,7 +977,7 @@ func (g *groupServer) QuitGroup(ctx context.Context, req *pbgroup.QuitGroupReq) 
 	if req.UserID == "" {
 		req.UserID = mcontext.GetOpUserID(ctx)
 	} else {
-		if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+		if err := authverify.CheckAccessV3(ctx, req.UserID, g.config.Share.IMAdminUserID); err != nil {
 			return nil, err
 		}
 	}
@@ -1028,7 +1015,7 @@ func (g *groupServer) deleteMemberAndSetConversationSeq(ctx context.Context, gro
 
 func (g *groupServer) SetGroupInfo(ctx context.Context, req *pbgroup.SetGroupInfoReq) (*pbgroup.SetGroupInfoResp, error) {
 	var opMember *model.GroupMember
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		var err error
 		opMember, err = g.db.TakeGroupMember(ctx, req.GroupInfoForSet.GroupID, mcontext.GetOpUserID(ctx))
 		if err != nil {
@@ -1088,7 +1075,7 @@ func (g *groupServer) SetGroupInfo(ctx context.Context, req *pbgroup.SetGroupInf
 	if req.GroupInfoForSet.Notification != "" {
 		num -= 3
 		func() {
-			conversation := &pbconv.ConversationReq{
+			conversation := &pbconversation.ConversationReq{
 				ConversationID:   msgprocessor.GetConversationIDBySessionType(constant.ReadGroupChatType, req.GroupInfoForSet.GroupID),
 				ConversationType: constant.ReadGroupChatType,
 				GroupID:          req.GroupInfoForSet.GroupID,
@@ -1122,7 +1109,7 @@ func (g *groupServer) SetGroupInfo(ctx context.Context, req *pbgroup.SetGroupInf
 func (g *groupServer) SetGroupInfoEx(ctx context.Context, req *pbgroup.SetGroupInfoExReq) (*pbgroup.SetGroupInfoExResp, error) {
 	var opMember *model.GroupMember
 
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		var err error
 
 		opMember, err = g.db.TakeGroupMember(ctx, req.GroupID, mcontext.GetOpUserID(ctx))
@@ -1195,7 +1182,7 @@ func (g *groupServer) SetGroupInfoEx(ctx context.Context, req *pbgroup.SetGroupI
 
 	if notificationFlag {
 		if req.Notification.Value != "" {
-			conversation := &pbconv.ConversationReq{
+			conversation := &pbconversation.ConversationReq{
 				ConversationID:   msgprocessor.GetConversationIDBySessionType(constant.ReadGroupChatType, req.GroupID),
 				ConversationType: constant.ReadGroupChatType,
 				GroupID:          req.GroupID,
@@ -1271,7 +1258,7 @@ func (g *groupServer) TransferGroupOwner(ctx context.Context, req *pbgroup.Trans
 		return nil, errs.ErrArgs.WrapMsg("NewOwnerUser not in group " + req.NewOwnerUserID)
 	}
 
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		if !(mcontext.GetOpUserID(ctx) == oldOwner.UserID && oldOwner.RoleLevel == constant.GroupOwner) {
 			return nil, errs.ErrNoPermission.WrapMsg("no permission transfer group owner")
 		}
@@ -1365,9 +1352,6 @@ func (g *groupServer) GetGroupMembersCMS(ctx context.Context, req *pbgroup.GetGr
 }
 
 func (g *groupServer) GetUserReqApplicationList(ctx context.Context, req *pbgroup.GetUserReqApplicationListReq) (*pbgroup.GetUserReqApplicationListResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
-		return nil, err
-	}
 	user, err := g.userClient.GetUserInfo(ctx, req.UserID)
 	if err != nil {
 		return nil, err
@@ -1423,7 +1407,7 @@ func (g *groupServer) DismissGroup(ctx context.Context, req *pbgroup.DismissGrou
 	if err != nil {
 		return nil, err
 	}
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		if owner.UserID != mcontext.GetOpUserID(ctx) {
 			return nil, errs.ErrNoPermission.WrapMsg("not group owner")
 		}
@@ -1446,7 +1430,6 @@ func (g *groupServer) DismissGroup(ctx context.Context, req *pbgroup.DismissGrou
 		if err != nil {
 			return nil, err
 		}
-		group.Status = constant.GroupStatusDismissed
 		tips := &sdkws.GroupDismissedTips{
 			Group:  g.groupDB2PB(group, owner.UserID, num),
 			OpUser: &sdkws.GroupMemberFullInfo{},
@@ -1480,7 +1463,7 @@ func (g *groupServer) MuteGroupMember(ctx context.Context, req *pbgroup.MuteGrou
 	if err := g.PopulateGroupMember(ctx, member); err != nil {
 		return nil, err
 	}
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		opMember, err := g.db.TakeGroupMember(ctx, req.GroupID, mcontext.GetOpUserID(ctx))
 		if err != nil {
 			return nil, err
@@ -1516,7 +1499,7 @@ func (g *groupServer) CancelMuteGroupMember(ctx context.Context, req *pbgroup.Ca
 		return nil, err
 	}
 
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		opMember, err := g.db.TakeGroupMember(ctx, req.GroupID, mcontext.GetOpUserID(ctx))
 		if err != nil {
 			return nil, err
@@ -1576,7 +1559,7 @@ func (g *groupServer) SetGroupMemberInfo(ctx context.Context, req *pbgroup.SetGr
 	if opUserID == "" {
 		return nil, errs.ErrNoPermission.WrapMsg("no op user id")
 	}
-	isAppManagerUid := authverify.IsAdmin(ctx)
+	isAppManagerUid := authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID)
 	groupMembers := make(map[string][]*pbgroup.SetGroupMemberInfo)
 	for i, member := range req.Members {
 		if member.RoleLevel != nil {
@@ -1764,7 +1747,7 @@ func (g *groupServer) GetUserInGroupMembers(ctx context.Context, req *pbgroup.Ge
 	if len(req.GroupIDs) == 0 {
 		return nil, errs.ErrArgs.WrapMsg("groupIDs empty")
 	}
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 	members, err := g.db.FindGroupMemberUser(ctx, req.GroupIDs, req.UserID)
@@ -1786,8 +1769,10 @@ func (g *groupServer) GetGroupMemberUserIDs(ctx context.Context, req *pbgroup.Ge
 	if err != nil {
 		return nil, err
 	}
-	if err := authverify.CheckAccessIn(ctx, userIDs...); err != nil {
-		return nil, err
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
+		if !datautil.Contain(mcontext.GetOpUserID(ctx), userIDs...) {
+			return nil, errs.ErrNoPermission.WrapMsg("opUser no permission")
+		}
 	}
 	return &pbgroup.GetGroupMemberUserIDsResp{
 		UserIDs: userIDs,
@@ -1816,9 +1801,6 @@ func (g *groupServer) GetGroupMemberRoleLevel(ctx context.Context, req *pbgroup.
 }
 
 func (g *groupServer) GetGroupUsersReqApplicationList(ctx context.Context, req *pbgroup.GetGroupUsersReqApplicationListReq) (*pbgroup.GetGroupUsersReqApplicationListResp, error) {
-	if err := g.CheckGroupAdmin(ctx, req.GroupID); err != nil {
-		return nil, err
-	}
 	requests, err := g.db.FindGroupRequests(ctx, req.GroupID, req.UserIDs)
 	if err != nil {
 		return nil, err

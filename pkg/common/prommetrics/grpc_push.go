@@ -28,10 +28,3 @@ var (
 		Help: "The number of messages with a push time exceeding 10 seconds",
 	})
 )
-
-func RegistryPush() {
-	registry.MustRegister(
-		MsgOfflinePushFailedCounter,
-		MsgLoneTimePushCounter,
-	)
-}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/startrpc"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/msggateway"
 	"github.com/openimsdk/protocol/sdkws"
@@ -34,8 +35,8 @@ import (
 	"google.golang.org/grpc"
 )
 
-func (s *Server) InitServer(ctx context.Context, config *Config, disCov discovery.Conn, server grpc.ServiceRegistrar) error {
-	userConn, err := disCov.GetConn(ctx, config.Discovery.RpcService.User)
+func (s *Server) InitServer(ctx context.Context, config *Config, disCov discovery.SvcDiscoveryRegistry, server *grpc.Server) error {
+	userConn, err := disCov.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return err
 	}
@@ -50,30 +51,24 @@ func (s *Server) InitServer(ctx context.Context, config *Config, disCov discover
 	return nil
 }
 
-//func (s *Server) Start(ctx context.Context, index int, conf *Config) error {
-//	return startrpc.Start(ctx, &conf.Discovery, &conf.MsgGateway.Prometheus, conf.MsgGateway.ListenIP,
-//		conf.MsgGateway.RPC.RegisterIP,
-//		conf.MsgGateway.RPC.AutoSetPorts, conf.MsgGateway.RPC.Ports, index,
-//		conf.Discovery.RpcService.MessageGateway,
-//		nil,
-//		conf,
-//		[]string{
-//			conf.Share.GetConfigFileName(),
-//			conf.Discovery.GetConfigFileName(),
-//			conf.MsgGateway.GetConfigFileName(),
-//			conf.WebhooksConfig.GetConfigFileName(),
-//			conf.RedisConfig.GetConfigFileName(),
-//		},
-//		[]string{
-//			conf.Discovery.RpcService.MessageGateway,
-//		},
-//		s.InitServer,
-//	)
-//}
+func (s *Server) Start(ctx context.Context, index int, conf *Config) error {
+	return startrpc.Start(ctx, &conf.Discovery, &conf.MsgGateway.Prometheus, conf.MsgGateway.ListenIP,
+		conf.MsgGateway.RPC.RegisterIP,
+		conf.MsgGateway.RPC.AutoSetPorts,
+		conf.MsgGateway.RPC.Ports, index,
+		conf.Share.RpcRegisterName.MessageGateway,
+		&conf.Share,
+		conf,
+		[]string{
+			conf.Share.RpcRegisterName.MessageGateway,
+		},
+		s.InitServer,
+	)
+}
 
 type Server struct {
 	msggateway.UnimplementedMsgGatewayServer
-
+	rpcPort        int
 	LongConnServer LongConnServer
 	config         *Config
 	pushTerminal   map[int]struct{}
@@ -100,7 +95,7 @@ func NewServer(longConnServer LongConnServer, conf *Config, ready func(srv *Serv
 }
 
 func (s *Server) GetUsersOnlineStatus(ctx context.Context, req *msggateway.GetUsersOnlineStatusReq) (*msggateway.GetUsersOnlineStatusResp, error) {
-	if !authverify.IsAdmin(ctx) {
+	if !authverify.IsAppManagerUid(ctx, s.config.Share.IMAdminUserID) {
 		return nil, errs.ErrNoPermission.WrapMsg("only app manager")
 	}
 	var resp msggateway.GetUsersOnlineStatusResp

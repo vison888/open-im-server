@@ -1,14 +1,6 @@
 package version
 
-import (
-	_ "embed"
-	"strings"
-)
+import _ "embed"
 
 //go:embed version
 var Version string
-
-func init() {
-	Version = strings.Trim(Version, "\n")
-	Version = strings.TrimSpace(Version)
-}

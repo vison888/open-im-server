@@ -23,23 +23,23 @@ import (
 	"github.com/openimsdk/tools/errs"
 )
 
-func (g *groupServer) GroupCreateCount(ctx context.Context, req *group.GroupCreateCountReq) (*group.GroupCreateCountResp, error) {
+func (s *groupServer) GroupCreateCount(ctx context.Context, req *group.GroupCreateCountReq) (*group.GroupCreateCountResp, error) {
 	if req.Start > req.End {
 		return nil, errs.ErrArgs.WrapMsg("start > end: %d > %d", req.Start, req.End)
 	}
-	if err := authverify.CheckAdmin(ctx); err != nil {
+	if err := authverify.CheckAdmin(ctx, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
-	total, err := g.db.CountTotal(ctx, nil)
+	total, err := s.db.CountTotal(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	start := time.UnixMilli(req.Start)
-	before, err := g.db.CountTotal(ctx, &start)
+	before, err := s.db.CountTotal(ctx, &start)
 	if err != nil {
 		return nil, err
 	}
-	count, err := g.db.CountRangeEverydayTotal(ctx, start, time.UnixMilli(req.End))
+	count, err := s.db.CountRangeEverydayTotal(ctx, start, time.UnixMilli(req.End))
 	if err != nil {
 		return nil, err
 	}

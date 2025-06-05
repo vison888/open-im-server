@@ -10,29 +10,29 @@ import (
 
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
-	"github.com/openimsdk/open-im-server/v3/pkg/rpccache"
-	pbAuth "github.com/openimsdk/protocol/auth"
-	"github.com/openimsdk/tools/mcontext"
-
 	"github.com/go-playground/validator/v10"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpccache"
+	pbAuth "github.com/openimsdk/protocol/auth"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/msggateway"
 	"github.com/openimsdk/tools/discovery"
+	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/log"
+	"github.com/openimsdk/tools/mcontext"
 	"github.com/openimsdk/tools/utils/stringutil"
 	"golang.org/x/sync/errgroup"
 )
 
 type LongConnServer interface {
-	Run(ctx context.Context) error
+	Run(done chan error) error
 	wsHandler(w http.ResponseWriter, r *http.Request)
 	GetUserAllCons(userID string) ([]*Client, bool)
 	GetUserPlatformCons(userID string, platform int) ([]*Client, bool, bool)
 	Validate(s any) error
-	SetDiscoveryRegistry(ctx context.Context, client discovery.Conn, config *Config) error
+	SetDiscoveryRegistry(ctx context.Context, client discovery.SvcDiscoveryRegistry, config *Config) error
 	KickUserConn(client *Client) error
 	UnRegister(c *Client)
 	SetKickHandlerInfo(i *kickHandler)
@@ -49,7 +49,7 @@ type WsServer struct {
 	unregisterChan    chan *Client
 	kickHandlerChan   chan *kickHandler
 	clients           UserMap
-	online            rpccache.OnlineCache
+	online            *rpccache.OnlineCache
 	subscription      *Subscription
 	clientPool        sync.Pool
 	onlineUserNum     atomic.Int64
@@ -57,7 +57,7 @@ type WsServer struct {
 	handshakeTimeout  time.Duration
 	writeBufferSize   int
 	validate          *validator.Validate
-	disCov            discovery.Conn
+	disCov            discovery.SvcDiscoveryRegistry
 	Compressor
 	//Encoder
 	MessageHandler
@@ -72,20 +72,20 @@ type kickHandler struct {
 	newClient  *Client
 }
 
-func (ws *WsServer) SetDiscoveryRegistry(ctx context.Context, disCov discovery.Conn, config *Config) error {
-	userConn, err := disCov.GetConn(ctx, config.Discovery.RpcService.User)
+func (ws *WsServer) SetDiscoveryRegistry(ctx context.Context, disCov discovery.SvcDiscoveryRegistry, config *Config) error {
+	userConn, err := disCov.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return err
 	}
-	pushConn, err := disCov.GetConn(ctx, config.Discovery.RpcService.Push)
+	pushConn, err := disCov.GetConn(ctx, config.Share.RpcRegisterName.Push)
 	if err != nil {
 		return err
 	}
-	authConn, err := disCov.GetConn(ctx, config.Discovery.RpcService.Auth)
+	authConn, err := disCov.GetConn(ctx, config.Share.RpcRegisterName.Auth)
 	if err != nil {
 		return err
 	}
-	msgConn, err := disCov.GetConn(ctx, config.Discovery.RpcService.Msg)
+	msgConn, err := disCov.GetConn(ctx, config.Share.RpcRegisterName.Msg)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func NewWsServer(msgGatewayConfig *Config, opts ...Option) *WsServer {
 	for _, o := range opts {
 		o(&config)
 	}
-	//userRpcClient := rpcclient.NewUserRpcClient(client, config.Discovery.RpcService.User, config.Share.IMAdminUserID)
+	//userRpcClient := rpcclient.NewUserRpcClient(client, config.Share.RpcRegisterName.User, config.Share.IMAdminUserID)
 
 	v := validator.New()
 	return &WsServer{
@@ -155,14 +155,19 @@ func NewWsServer(msgGatewayConfig *Config, opts ...Option) *WsServer {
 	}
 }
 
-func (ws *WsServer) Run(ctx context.Context) error {
-	var client *Client
+func (ws *WsServer) Run(done chan error) error {
+	var (
+		client       *Client
+		netErr       error
+		shutdownDone = make(chan struct{}, 1)
+	)
 
-	ctx, cancel := context.WithCancelCause(ctx)
+	server := http.Server{Addr: ":" + stringutil.IntToString(ws.port), Handler: nil}
+
 	go func() {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-shutdownDone:
 				return
 			case client = <-ws.registerChan:
 				ws.registerClient(client)
@@ -173,40 +178,38 @@ func (ws *WsServer) Run(ctx context.Context) error {
 			}
 		}
 	}()
-
-	done := make(chan struct{})
+	netDone := make(chan struct{}, 1)
 	go func() {
-		wsServer := http.Server{Addr: fmt.Sprintf(":%d", ws.port), Handler: nil}
 		http.HandleFunc("/", ws.wsHandler)
-		go func() {
-			defer close(done)
-			<-ctx.Done()
-			_ = wsServer.Shutdown(context.Background())
-		}()
-		err := wsServer.ListenAndServe()
-		if err == nil {
-			err = fmt.Errorf("http server closed")
+		err := server.ListenAndServe()
+		defer close(netDone)
+		if err != nil && err != http.ErrServerClosed {
+			netErr = errs.WrapMsg(err, "ws start err", server.Addr)
 		}
-		cancel(fmt.Errorf("msg gateway %w", err))
 	}()
-
-	<-ctx.Done()
-
-	timeout := time.NewTimer(time.Second * 15)
-	defer timeout.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var err error
 	select {
-	case <-timeout.C:
-		log.ZWarn(ctx, "msg gateway graceful stop timeout", nil)
-	case <-done:
-		log.ZDebug(ctx, "msg gateway graceful stop done")
+	case err = <-done:
+		sErr := server.Shutdown(ctx)
+		if sErr != nil {
+			return errs.WrapMsg(sErr, "shutdown err")
+		}
+		close(shutdownDone)
+		if err != nil {
+			return err
+		}
+	case <-netDone:
 	}
-	return context.Cause(ctx)
+	return netErr
+
 }
 
-const concurrentRequest = 3
+var concurrentRequest = 3
 
 func (ws *WsServer) sendUserOnlineInfoToOtherNode(ctx context.Context, client *Client) error {
-	conns, err := ws.disCov.GetConns(ctx, ws.msgGatewayConfig.Discovery.RpcService.MessageGateway)
+	conns, err := ws.disCov.GetConns(ctx, ws.msgGatewayConfig.Share.RpcRegisterName.MessageGateway)
 	if err != nil {
 		return err
 	}
@@ -339,15 +342,6 @@ func (ws *WsServer) multiTerminalLoginChecker(clientOK bool, oldClients []*Clien
 	case constant.PCAndOther:
 		if constant.PlatformIDToClass(newClient.PlatformID) == constant.TerminalPC {
 			return
-		}
-		clients, ok := ws.clients.GetAll(newClient.UserID)
-		clientOK = ok
-		oldClients = make([]*Client, 0, len(clients))
-		for _, c := range clients {
-			if constant.PlatformIDToClass(c.PlatformID) == constant.TerminalPC {
-				continue
-			}
-			oldClients = append(oldClients, c)
 		}
 		fallthrough
 	case constant.AllLoginButSameTermKick:

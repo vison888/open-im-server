@@ -28,8 +28,6 @@ run:
   #   - util
   #   - .*~
   #   - api/swagger/docs
-
-  
   #   - server/docs
   #   - components/mnt/config/certs
   #   - logs

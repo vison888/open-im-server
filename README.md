@@ -16,7 +16,6 @@
 [![Best Practices](https://img.shields.io/badge/Best%20Practices-purple?style=for-the-badge)](https://www.bestpractices.dev/projects/8045)
 [![Good First Issues](https://img.shields.io/github/issues/openimsdk/open-im-server/good%20first%20issue?style=for-the-badge&logo=github)](https://github.com/openimsdk/open-im-server/issues?q=is%3Aissue+is%3Aopen+sort%3Aupdated-desc+label%3A%22good+first+issue%22)
 [![Language](https://img.shields.io/badge/Language-Go-blue.svg?style=for-the-badge&logo=go&logoColor=white)](https://golang.org/)
-[![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20OpenIM%20Guru-006BFF?style=for-the-badge)](https://gurubase.io/g/openim)
 
      
 <p align="center">
@@ -132,8 +131,7 @@ Thank you for contributing to building a powerful instant messaging solution!
 
 ## :closed_book: License
 
-This software is licensed under the Apache License 2.0
-
+OpenIMSDK is available under the Apache License 2.0. See the [LICENSE file](https://github.com/openimsdk/open-im-server/blob/main/LICENSE) for more information. 
 
 
 

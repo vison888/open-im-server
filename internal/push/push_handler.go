@@ -3,16 +3,21 @@ package push
 import (
 	"context"
 	"encoding/json"
+	"math/rand"
+	"strconv"
 	"time"
 
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
+
+	"github.com/IBM/sarama"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/options"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/kafka"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
 	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpccache"
-	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 	"github.com/openimsdk/open-im-server/v3/pkg/util/conversationutil"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/msggateway"
@@ -29,11 +34,11 @@ import (
 )
 
 type ConsumerHandler struct {
-	//pushConsumerGroup      mq.Consumer
+	pushConsumerGroup      *kafka.MConsumerGroup
 	offlinePusher          offlinepush.OfflinePusher
 	onlinePusher           OnlinePusher
 	pushDatabase           controller.PushDatabase
-	onlineCache            rpccache.OnlineCache
+	onlineCache            *rpccache.OnlineCache
 	groupLocalCache        *rpccache.GroupLocalCache
 	conversationLocalCache *rpccache.ConversationLocalCache
 	webhookClient          *webhook.Client
@@ -44,35 +49,38 @@ type ConsumerHandler struct {
 	conversationClient     *rpcli.ConversationClient
 }
 
-func NewConsumerHandler(ctx context.Context, config *Config, database controller.PushDatabase, offlinePusher offlinepush.OfflinePusher, rdb redis.UniversalClient, client discovery.Conn) (*ConsumerHandler, error) {
-	userConn, err := client.GetConn(ctx, config.Discovery.RpcService.User)
-	if err != nil {
-		return nil, err
-	}
-	groupConn, err := client.GetConn(ctx, config.Discovery.RpcService.Group)
-	if err != nil {
-		return nil, err
-	}
-	msgConn, err := client.GetConn(ctx, config.Discovery.RpcService.Msg)
-	if err != nil {
-		return nil, err
-	}
-	conversationConn, err := client.GetConn(ctx, config.Discovery.RpcService.Conversation)
-	if err != nil {
-		return nil, err
-	}
-	onlinePusher, err := NewOnlinePusher(client, config)
-	if err != nil {
-		return nil, err
-	}
+func NewConsumerHandler(ctx context.Context, config *Config, database controller.PushDatabase, offlinePusher offlinepush.OfflinePusher, rdb redis.UniversalClient,
+	client discovery.SvcDiscoveryRegistry) (*ConsumerHandler, error) {
 	var consumerHandler ConsumerHandler
+	var err error
+	consumerHandler.pushConsumerGroup, err = kafka.NewMConsumerGroup(config.KafkaConfig.Build(), config.KafkaConfig.ToPushGroupID,
+		[]string{config.KafkaConfig.ToPushTopic}, true)
+	if err != nil {
+		return nil, err
+	}
+	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
+	if err != nil {
+		return nil, err
+	}
+	groupConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Group)
+	if err != nil {
+		return nil, err
+	}
+	msgConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Msg)
+	if err != nil {
+		return nil, err
+	}
+	conversationConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Conversation)
+	if err != nil {
+		return nil, err
+	}
 	consumerHandler.userClient = rpcli.NewUserClient(userConn)
 	consumerHandler.groupClient = rpcli.NewGroupClient(groupConn)
 	consumerHandler.msgClient = rpcli.NewMsgClient(msgConn)
 	consumerHandler.conversationClient = rpcli.NewConversationClient(conversationConn)
 
 	consumerHandler.offlinePusher = offlinePusher
-	consumerHandler.onlinePusher = onlinePusher
+	consumerHandler.onlinePusher = NewOnlinePusher(client, config)
 	consumerHandler.groupLocalCache = rpccache.NewGroupLocalCache(consumerHandler.groupClient, &config.LocalCacheConfig, rdb)
 	consumerHandler.conversationLocalCache = rpccache.NewConversationLocalCache(consumerHandler.conversationClient, &config.LocalCacheConfig, rdb)
 	consumerHandler.webhookClient = webhook.NewWebhookClient(config.WebhooksConfig.URL)
@@ -85,7 +93,7 @@ func NewConsumerHandler(ctx context.Context, config *Config, database controller
 	return &consumerHandler, nil
 }
 
-func (c *ConsumerHandler) HandleMs2PsChat(ctx context.Context, msg []byte) {
+func (c *ConsumerHandler) handleMs2PsChat(ctx context.Context, msg []byte) {
 	msgFromMQ := pbpush.PushMsgReq{}
 	if err := proto.Unmarshal(msg, &msgFromMQ); err != nil {
 		log.ZError(ctx, "push Unmarshal msg err", err, "msg", string(msg))
@@ -119,8 +127,26 @@ func (c *ConsumerHandler) HandleMs2PsChat(ctx context.Context, msg []byte) {
 	}
 }
 
-func (c *ConsumerHandler) WaitCache() {
-	c.onlineCache.WaitCache()
+func (*ConsumerHandler) Setup(sarama.ConsumerGroupSession) error { return nil }
+
+func (*ConsumerHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
+
+func (c *ConsumerHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	c.onlineCache.Lock.Lock()
+	for c.onlineCache.CurrentPhase.Load() < rpccache.DoSubscribeOver {
+		c.onlineCache.Cond.Wait()
+	}
+	c.onlineCache.Lock.Unlock()
+	ctx := mcontext.SetOperationID(context.TODO(), strconv.FormatInt(time.Now().UnixNano()+int64(rand.Uint32()), 10))
+	log.ZInfo(ctx, "begin consume messages")
+
+	for msg := range claim.Messages() {
+		ctx := c.pushConsumerGroup.GetContextFromMsg(msg)
+		ctx = mcontext.WithOpUserIDContext(ctx, c.config.Share.IMAdminUserID[0])
+		c.handleMs2PsChat(ctx, msg.Value)
+		sess.MarkMessage(msg, "")
+	}
+	return nil
 }
 
 // Push2User Suitable for two types of conversations, one is SingleChatType and the other is NotificationChatType.

@@ -24,7 +24,3 @@ var (
 		Help: "The number of user login",
 	})
 )
-
-func RegistryAuth() {
-	registry.MustRegister(UserLoginCounter)
-}

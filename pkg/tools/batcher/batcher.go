@@ -3,13 +3,11 @@ package batcher
 import (
 	"context"
 	"fmt"
+	"github.com/openimsdk/tools/errs"
+	"github.com/openimsdk/tools/utils/idutil"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
-	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/utils/idutil"
 )
 
 var (
@@ -247,21 +245,18 @@ func (b *Batcher[T]) distributeMessage(messages map[string][]*T, totalCount int,
 	if b.config.syncWait {
 		b.counter.Wait()
 	}
-	if b.OnComplete != nil {
-		b.OnComplete(lastMessage, totalCount)
-	}
+	b.OnComplete(lastMessage, totalCount)
 }
 
 func (b *Batcher[T]) run(channelID int, ch <-chan *Msg[T]) {
 	defer b.wait.Done()
-	ctx := authverify.WithTempAdmin(context.Background())
 	for {
 		select {
 		case messages, ok := <-ch:
 			if !ok {
 				return
 			}
-			b.Do(ctx, channelID, messages)
+			b.Do(context.Background(), channelID, messages)
 			if b.config.syncWait {
 				b.counter.Done()
 			}

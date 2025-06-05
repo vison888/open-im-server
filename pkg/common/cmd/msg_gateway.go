@@ -18,8 +18,6 @@ import (
 	"context"
 
 	"github.com/openimsdk/open-im-server/v3/internal/msggateway"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/startrpc"
 	"github.com/openimsdk/open-im-server/v3/version"
 
 	"github.com/openimsdk/tools/system/program"
@@ -37,11 +35,11 @@ func NewMsgGatewayCmd() *MsgGatewayCmd {
 	var msgGatewayConfig msggateway.Config
 	ret := &MsgGatewayCmd{msgGatewayConfig: &msgGatewayConfig}
 	ret.configMap = map[string]any{
-		config.OpenIMMsgGatewayCfgFileName: &msgGatewayConfig.MsgGateway,
-		config.ShareFileName:               &msgGatewayConfig.Share,
-		config.RedisConfigFileName:         &msgGatewayConfig.RedisConfig,
-		config.WebhooksConfigFileName:      &msgGatewayConfig.WebhooksConfig,
-		config.DiscoveryConfigFilename:     &msgGatewayConfig.Discovery,
+		OpenIMMsgGatewayCfgFileName: &msgGatewayConfig.MsgGateway,
+		ShareFileName:               &msgGatewayConfig.Share,
+		RedisConfigFileName:         &msgGatewayConfig.RedisConfig,
+		WebhooksConfigFileName:      &msgGatewayConfig.WebhooksConfig,
+		DiscoveryConfigFilename:     &msgGatewayConfig.Discovery,
 	}
 	ret.RootCmd = NewRootCmd(program.GetProcessName(), WithConfigMap(ret.configMap))
 	ret.ctx = context.WithValue(context.Background(), "version", version.Version)
@@ -56,20 +54,5 @@ func (m *MsgGatewayCmd) Exec() error {
 }
 
 func (m *MsgGatewayCmd) runE() error {
-	m.msgGatewayConfig.Index = config.Index(m.Index())
-	rpc := m.msgGatewayConfig.MsgGateway.RPC
-	var prometheus config.Prometheus
-	return startrpc.Start(
-		m.ctx, &m.msgGatewayConfig.Discovery,
-		&prometheus,
-		rpc.ListenIP, rpc.RegisterIP,
-		rpc.AutoSetPorts,
-		rpc.Ports, int(m.msgGatewayConfig.Index),
-		m.msgGatewayConfig.Discovery.RpcService.MessageGateway,
-		nil,
-		m.msgGatewayConfig,
-		[]string{},
-		[]string{},
-		msggateway.Start,
-	)
+	return msggateway.Start(m.ctx, m.Index(), m.msgGatewayConfig)
 }

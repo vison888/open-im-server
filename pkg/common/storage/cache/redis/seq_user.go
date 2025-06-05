@@ -2,29 +2,31 @@ package redis
 
 import (
 	"context"
-	"strconv"
-	"time"
-
+	"github.com/dtm-labs/rockscache"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/cachekey"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/tools/errs"
 	"github.com/redis/go-redis/v9"
+	"strconv"
+	"time"
 )
 
 func NewSeqUserCacheRedis(rdb redis.UniversalClient, mgo database.SeqUser) cache.SeqUser {
 	return &seqUserCacheRedis{
+		rdb:               rdb,
 		mgo:               mgo,
 		readSeqWriteRatio: 100,
 		expireTime:        time.Hour * 24 * 7,
 		readExpireTime:    time.Hour * 24 * 30,
-		rocks:             newRocksCacheClient(rdb),
+		rocks:             rockscache.NewClient(rdb, *GetRocksCacheOptions()),
 	}
 }
 
 type seqUserCacheRedis struct {
+	rdb               redis.UniversalClient
 	mgo               database.SeqUser
-	rocks             *rocksCacheClient
+	rocks             *rockscache.Client
 	expireTime        time.Duration
 	readExpireTime    time.Duration
 	readSeqWriteRatio int64
@@ -52,7 +54,7 @@ func (s *seqUserCacheRedis) SetUserMaxSeq(ctx context.Context, conversationID st
 	if err := s.mgo.SetUserMaxSeq(ctx, conversationID, userID, seq); err != nil {
 		return err
 	}
-	return s.rocks.GetClient().TagAsDeleted2(ctx, s.getSeqUserMaxSeqKey(conversationID, userID))
+	return s.rocks.TagAsDeleted2(ctx, s.getSeqUserMaxSeqKey(conversationID, userID))
 }
 
 func (s *seqUserCacheRedis) GetUserMinSeq(ctx context.Context, conversationID string, userID string) (int64, error) {
@@ -72,15 +74,12 @@ func (s *seqUserCacheRedis) GetUserReadSeq(ctx context.Context, conversationID s
 }
 
 func (s *seqUserCacheRedis) SetUserReadSeq(ctx context.Context, conversationID string, userID string, seq int64) error {
-	if s.rocks.GetRedis() == nil {
-		return s.SetUserReadSeqToDB(ctx, conversationID, userID, seq)
-	}
 	dbSeq, err := s.GetUserReadSeq(ctx, conversationID, userID)
 	if err != nil {
 		return err
 	}
 	if dbSeq < seq {
-		if err := s.rocks.GetClient().RawSet(ctx, s.getSeqUserReadSeqKey(conversationID, userID), strconv.Itoa(int(seq)), s.readExpireTime); err != nil {
+		if err := s.rocks.RawSet(ctx, s.getSeqUserReadSeqKey(conversationID, userID), strconv.Itoa(int(seq)), s.readExpireTime); err != nil {
 			return errs.Wrap(err)
 		}
 	}
@@ -110,12 +109,12 @@ func (s *seqUserCacheRedis) setUserRedisReadSeqs(ctx context.Context, userID str
 		keys = append(keys, key)
 		keySeq[key] = seq
 	}
-	slotKeys, err := groupKeysBySlot(ctx, s.rocks.GetRedis(), keys)
+	slotKeys, err := groupKeysBySlot(ctx, s.rdb, keys)
 	if err != nil {
 		return err
 	}
 	for _, keys := range slotKeys {
-		pipe := s.rocks.GetRedis().Pipeline()
+		pipe := s.rdb.Pipeline()
 		for _, key := range keys {
 			pipe.HSet(ctx, key, "value", strconv.FormatInt(keySeq[key], 10))
 			pipe.Expire(ctx, key, s.readExpireTime)

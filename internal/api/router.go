@@ -5,30 +5,29 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gin-contrib/gzip"
-	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
-	"github.com/go-playground/validator/v10"
-	"github.com/openimsdk/open-im-server/v3/internal/api/jssdk"
-	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 	pbAuth "github.com/openimsdk/protocol/auth"
-	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/conversation"
 	"github.com/openimsdk/protocol/group"
 	"github.com/openimsdk/protocol/msg"
 	"github.com/openimsdk/protocol/relation"
 	"github.com/openimsdk/protocol/third"
 	"github.com/openimsdk/protocol/user"
+
+	"github.com/openimsdk/open-im-server/v3/internal/api/jssdk"
+
+	"github.com/gin-contrib/gzip"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/go-playground/validator/v10"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
+	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/tools/apiresp"
 	"github.com/openimsdk/tools/discovery"
-	"github.com/openimsdk/tools/discovery/etcd"
 	"github.com/openimsdk/tools/log"
 	"github.com/openimsdk/tools/mw"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 const (
@@ -53,32 +52,32 @@ func prommetricsGin() gin.HandlerFunc {
 	}
 }
 
-func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin.Engine, error) {
-	authConn, err := client.GetConn(ctx, cfg.Discovery.RpcService.Auth)
+func newGinRouter(ctx context.Context, client discovery.SvcDiscoveryRegistry, config *Config) (*gin.Engine, error) {
+	authConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Auth)
 	if err != nil {
 		return nil, err
 	}
-	userConn, err := client.GetConn(ctx, cfg.Discovery.RpcService.User)
+	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return nil, err
 	}
-	groupConn, err := client.GetConn(ctx, cfg.Discovery.RpcService.Group)
+	groupConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Group)
 	if err != nil {
 		return nil, err
 	}
-	friendConn, err := client.GetConn(ctx, cfg.Discovery.RpcService.Friend)
+	friendConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Friend)
 	if err != nil {
 		return nil, err
 	}
-	conversationConn, err := client.GetConn(ctx, cfg.Discovery.RpcService.Conversation)
+	conversationConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Conversation)
 	if err != nil {
 		return nil, err
 	}
-	thirdConn, err := client.GetConn(ctx, cfg.Discovery.RpcService.Third)
+	thirdConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Third)
 	if err != nil {
 		return nil, err
 	}
-	msgConn, err := client.GetConn(ctx, cfg.Discovery.RpcService.Msg)
+	msgConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +86,7 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		_ = v.RegisterValidation("required_if", RequiredIf)
 	}
-	switch cfg.API.Api.CompressionLevel {
+	switch config.API.Api.CompressionLevel {
 	case NoCompression:
 	case DefaultCompression:
 		r.Use(gzip.Gzip(gzip.DefaultCompression))
@@ -96,12 +95,11 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 	case BestSpeed:
 		r.Use(gzip.Gzip(gzip.BestSpeed))
 	}
-	r.Use(prommetricsGin(), gin.RecoveryWithWriter(gin.DefaultErrorWriter, mw.GinPanicErr), mw.CorsHandler(),
-		mw.GinParseOperationID(), GinParseToken(rpcli.NewAuthClient(authConn)), setGinIsAdmin(cfg.Share.IMAdminUserID))
-
-	u := NewUserApi(user.NewUserClient(userConn), client, cfg.Discovery.RpcService)
+	r.Use(prommetricsGin(), gin.RecoveryWithWriter(gin.DefaultErrorWriter, mw.GinPanicErr), mw.CorsHandler(), mw.GinParseOperationID(), GinParseToken(rpcli.NewAuthClient(authConn)))
+	u := NewUserApi(user.NewUserClient(userConn), client, config.Share.RpcRegisterName)
+	m := NewMessageApi(msg.NewMsgClient(msgConn), rpcli.NewUserClient(userConn), config.Share.IMAdminUserID)
+	userRouterGroup := r.Group("/user")
 	{
-		userRouterGroup := r.Group("/user")
 		userRouterGroup.POST("/user_register", u.UserRegister)
 		userRouterGroup.POST("/update_user_info", u.UpdateUserInfo)
 		userRouterGroup.POST("/update_user_info_ex", u.UpdateUserInfoEx)
@@ -125,11 +123,6 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 		userRouterGroup.POST("/add_notification_account", u.AddNotificationAccount)
 		userRouterGroup.POST("/update_notification_account", u.UpdateNotificationAccountInfo)
 		userRouterGroup.POST("/search_notification_account", u.SearchNotificationAccount)
-
-		userRouterGroup.POST("/get_user_client_config", u.GetUserClientConfig)
-		userRouterGroup.POST("/set_user_client_config", u.SetUserClientConfig)
-		userRouterGroup.POST("/del_user_client_config", u.DelUserClientConfig)
-		userRouterGroup.POST("/page_user_client_config", u.PageUserClientConfig)
 	}
 	// friend routing group
 	{
@@ -207,7 +200,7 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 	}
 	// Third service
 	{
-		t := NewThirdApi(third.NewThirdClient(thirdConn), cfg.API.Prometheus.GrafanaURL)
+		t := NewThirdApi(third.NewThirdClient(thirdConn), config.API.Prometheus.GrafanaURL)
 		thirdGroup := r.Group("/third")
 		thirdGroup.GET("/prometheus", t.GetPrometheus)
 		thirdGroup.POST("/fcm_update_token", t.FcmUpdateToken)
@@ -231,7 +224,6 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 		objectGroup.GET("/*name", t.ObjectRedirect)
 	}
 	// Message
-	m := NewMessageApi(msg.NewMsgClient(msgConn), rpcli.NewUserClient(userConn), cfg.Share.IMAdminUserID)
 	{
 		msgGroup := r.Group("/msg")
 		msgGroup.POST("/newest_seq", m.GetSeq)
@@ -252,7 +244,6 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 		msgGroup.POST("/delete_msg_physical", m.DeleteMsgPhysical)
 
 		msgGroup.POST("/batch_send_msg", m.BatchSendMsg)
-		msgGroup.POST("/send_simple_msg", m.SendSimpleMessage)
 		msgGroup.POST("/check_msg_is_send_success", m.CheckMsgIsSendSuccess)
 		msgGroup.POST("/get_server_time", m.GetServerTime)
 	}
@@ -265,7 +256,7 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 		conversationGroup.POST("/get_conversation", c.GetConversation)
 		conversationGroup.POST("/get_conversations", c.GetConversations)
 		conversationGroup.POST("/set_conversations", c.SetConversations)
-		//conversationGroup.POST("/get_conversation_offline_push_user_ids", c.GetConversationOfflinePushUserIDs)
+		conversationGroup.POST("/get_conversation_offline_push_user_ids", c.GetConversationOfflinePushUserIDs)
 		conversationGroup.POST("/get_full_conversation_ids", c.GetFullOwnerConversationIDs)
 		conversationGroup.POST("/get_incremental_conversations", c.GetIncrementalConversation)
 		conversationGroup.POST("/get_owner_conversation", c.GetOwnerConversation)
@@ -289,8 +280,8 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 		jssdk.POST("/get_active_conversations", j.GetActiveConversations)
 	}
 	{
-		pd := NewPrometheusDiscoveryApi(cfg, client)
-		proDiscoveryGroup := r.Group("/prometheus_discovery")
+		pd := NewPrometheusDiscoveryApi(config, client)
+		proDiscoveryGroup := r.Group("/prometheus_discovery", pd.Enable)
 		proDiscoveryGroup.GET("/api", pd.Api)
 		proDiscoveryGroup.GET("/user", pd.User)
 		proDiscoveryGroup.GET("/group", pd.Group)
@@ -302,24 +293,6 @@ func newGinRouter(ctx context.Context, client discovery.Conn, cfg *Config) (*gin
 		proDiscoveryGroup.GET("/push", pd.Push)
 		proDiscoveryGroup.GET("/msg_gateway", pd.MessageGateway)
 		proDiscoveryGroup.GET("/msg_transfer", pd.MessageTransfer)
-	}
-
-	var etcdClient *clientv3.Client
-	if cfg.Discovery.Enable == config.ETCD {
-		etcdClient = client.(*etcd.SvcDiscoveryRegistryImpl).GetClient()
-	}
-	cm := NewConfigManager(cfg.Share.IMAdminUserID, &cfg.AllConfig, etcdClient, string(cfg.ConfigPath))
-	{
-		configGroup := r.Group("/config", cm.CheckAdmin)
-		configGroup.POST("/get_config_list", cm.GetConfigList)
-		configGroup.POST("/get_config", cm.GetConfig)
-		configGroup.POST("/set_config", cm.SetConfig)
-		configGroup.POST("/reset_config", cm.ResetConfig)
-		configGroup.POST("/set_enable_config_manager", cm.SetEnableConfigManager)
-		configGroup.POST("/get_enable_config_manager", cm.GetEnableConfigManager)
-	}
-	{
-		r.POST("/restart", cm.CheckAdmin, cm.Restart)
 	}
 	return r, nil
 }
@@ -352,12 +325,6 @@ func GinParseToken(authClient *rpcli.AuthClient) gin.HandlerFunc {
 			c.Set(constant.OpUserID, resp.UserID)
 			c.Next()
 		}
-	}
-}
-
-func setGinIsAdmin(imAdminUserID []string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Set(authverify.CtxAdminUserIDsKey, imAdminUserID)
 	}
 }
 

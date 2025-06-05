@@ -1,19 +1,28 @@
+// Copyright © 2023 OpenIM. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package cmd
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discovery"
-	disetcd "github.com/openimsdk/open-im-server/v3/pkg/common/discovery/etcd"
 	"github.com/openimsdk/open-im-server/v3/version"
-	"github.com/openimsdk/tools/discovery/etcd"
 	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/log"
 	"github.com/spf13/cobra"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type RootCmd struct {
@@ -24,7 +33,6 @@ type RootCmd struct {
 	log            config.Log
 	index          int
 	configPath     string
-	etcdClient     *clientv3.Client
 }
 
 func (r *RootCmd) ConfigPath() string {
@@ -72,47 +80,23 @@ func NewRootCmd(processName string, opts ...func(*CmdOpts)) *RootCmd {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
-	cmd.Flags().StringP(config.FlagConf, "c", "", "path of config directory")
-	cmd.Flags().IntP(config.FlagTransferIndex, "i", 0, "process startup sequence number")
+	cmd.Flags().StringP(FlagConf, "c", "", "path of config directory")
+	cmd.Flags().IntP(FlagTransferIndex, "i", 0, "process startup sequence number")
 
 	rootCmd.Command = cmd
 	return rootCmd
 }
 
-func (r *RootCmd) initEtcd() error {
-	configDirectory, _, err := r.getFlag(&r.Command)
-	if err != nil {
-		return err
-	}
-	disConfig := config.Discovery{}
-	err = config.Load(configDirectory, config.DiscoveryConfigFilename, config.EnvPrefixMap[config.DiscoveryConfigFilename], &disConfig)
-	if err != nil {
-		return err
-	}
-	if disConfig.Enable == config.ETCD {
-		discov, _ := kdisc.NewDiscoveryRegister(&disConfig, nil)
-		r.etcdClient = discov.(*etcd.SvcDiscoveryRegistryImpl).GetClient()
-	}
-	return nil
-}
-
 func (r *RootCmd) persistentPreRun(cmd *cobra.Command, opts ...func(*CmdOpts)) error {
-	if err := r.initEtcd(); err != nil {
-		return err
-	}
 	cmdOpts := r.applyOptions(opts...)
 	if err := r.initializeConfiguration(cmd, cmdOpts); err != nil {
 		return err
 	}
-	if err := r.updateConfigFromEtcd(cmdOpts); err != nil {
-		return err
-	}
+
 	if err := r.initializeLogger(cmdOpts); err != nil {
 		return errs.WrapMsg(err, "failed to initialize logger")
 	}
-	if err := r.etcdClient.Close(); err != nil {
-		return errs.WrapMsg(err, "failed to close etcd client")
-	}
+
 	return nil
 }
 
@@ -121,75 +105,18 @@ func (r *RootCmd) initializeConfiguration(cmd *cobra.Command, opts *CmdOpts) err
 	if err != nil {
 		return err
 	}
-
 	// Load common configuration file
 	//opts.configMap[ShareFileName] = StructEnvPrefix{EnvPrefix: shareEnvPrefix, ConfigStruct: &r.share}
 	for configFileName, configStruct := range opts.configMap {
-		err := config.Load(configDirectory, configFileName, config.EnvPrefixMap[configFileName], configStruct)
+		err := config.LoadConfig(filepath.Join(configDirectory, configFileName),
+			ConfigEnvPrefixMap[configFileName], configStruct)
 		if err != nil {
 			return err
 		}
 	}
 	// Load common log configuration file
-	return config.Load(configDirectory, config.LogConfigFileName, config.EnvPrefixMap[config.LogConfigFileName], &r.log)
-}
-
-func (r *RootCmd) updateConfigFromEtcd(opts *CmdOpts) error {
-	if r.etcdClient == nil {
-		return nil
-	}
-	ctx := context.TODO()
-
-	res, err := r.etcdClient.Get(ctx, disetcd.BuildKey(disetcd.EnableConfigCenterKey))
-	if err != nil {
-		log.ZWarn(ctx, "root cmd updateConfigFromEtcd, etcd Get EnableConfigCenterKey err: %v", errs.Wrap(err))
-		return nil
-	}
-	if res.Count == 0 {
-		return nil
-	} else {
-		if string(res.Kvs[0].Value) == disetcd.Disable {
-			return nil
-		} else if string(res.Kvs[0].Value) != disetcd.Enable {
-			return errs.New("unknown EnableConfigCenter value").Wrap()
-		}
-	}
-
-	update := func(configFileName string, configStruct any) error {
-		key := disetcd.BuildKey(configFileName)
-		etcdRes, err := r.etcdClient.Get(ctx, key)
-		if err != nil {
-			log.ZWarn(ctx, "root cmd updateConfigFromEtcd, etcd Get err: %v", errs.Wrap(err))
-			return nil
-		}
-		if etcdRes.Count == 0 {
-			data, err := json.Marshal(configStruct)
-			if err != nil {
-				return errs.ErrArgs.WithDetail(err.Error()).Wrap()
-			}
-			_, err = r.etcdClient.Put(ctx, disetcd.BuildKey(configFileName), string(data))
-			if err != nil {
-				log.ZWarn(ctx, "root cmd updateConfigFromEtcd, etcd Put err: %v", errs.Wrap(err))
-			}
-			return nil
-		}
-		err = json.Unmarshal(etcdRes.Kvs[0].Value, configStruct)
-		if err != nil {
-			return errs.WrapMsg(err, "failed to unmarshal config from etcd")
-		}
-		return nil
-	}
-	for configFileName, configStruct := range opts.configMap {
-		if err := update(configFileName, configStruct); err != nil {
-			return err
-		}
-	}
-	if err := update(config.LogConfigFileName, &r.log); err != nil {
-		return err
-	}
-	// Load common log configuration file
-	return nil
-
+	return config.LoadConfig(filepath.Join(configDirectory, LogConfigFileName),
+		ConfigEnvPrefixMap[LogConfigFileName], &r.log)
 }
 
 func (r *RootCmd) applyOptions(opts ...func(*CmdOpts)) *CmdOpts {
@@ -203,6 +130,7 @@ func (r *RootCmd) applyOptions(opts ...func(*CmdOpts)) *CmdOpts {
 
 func (r *RootCmd) initializeLogger(cmdOpts *CmdOpts) error {
 	err := log.InitLoggerFromConfig(
+
 		cmdOpts.loggerPrefixName,
 		r.processName,
 		"", "",
@@ -229,12 +157,12 @@ func defaultCmdOpts() *CmdOpts {
 }
 
 func (r *RootCmd) getFlag(cmd *cobra.Command) (string, int, error) {
-	configDirectory, err := cmd.Flags().GetString(config.FlagConf)
+	configDirectory, err := cmd.Flags().GetString(FlagConf)
 	if err != nil {
 		return "", 0, errs.Wrap(err)
 	}
 	r.configPath = configDirectory
-	index, err := cmd.Flags().GetInt(config.FlagTransferIndex)
+	index, err := cmd.Flags().GetInt(FlagTransferIndex)
 	if err != nil {
 		return "", 0, errs.Wrap(err)
 	}

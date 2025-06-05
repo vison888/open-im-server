@@ -11,6 +11,9 @@ import (
 	"github.com/openimsdk/protocol/constant"
 	pbgroup "github.com/openimsdk/protocol/group"
 	"github.com/openimsdk/protocol/sdkws"
+	"github.com/openimsdk/tools/errs"
+	"github.com/openimsdk/tools/mcontext"
+	"github.com/openimsdk/tools/utils/datautil"
 )
 
 const versionSyncLimit = 500
@@ -20,8 +23,10 @@ func (g *groupServer) GetFullGroupMemberUserIDs(ctx context.Context, req *pbgrou
 	if err != nil {
 		return nil, err
 	}
-	if err := authverify.CheckAccessIn(ctx, userIDs...); err != nil {
-		return nil, err
+	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
+		if !datautil.Contain(mcontext.GetOpUserID(ctx), userIDs...) {
+			return nil, errs.ErrNoPermission.WrapMsg("op user not in group")
+		}
 	}
 	vl, err := g.db.FindMaxGroupMemberVersionCache(ctx, req.GroupID)
 	if err != nil {
@@ -39,15 +44,15 @@ func (g *groupServer) GetFullGroupMemberUserIDs(ctx context.Context, req *pbgrou
 	}, nil
 }
 
-func (g *groupServer) GetFullJoinGroupIDs(ctx context.Context, req *pbgroup.GetFullJoinGroupIDsReq) (*pbgroup.GetFullJoinGroupIDsResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+func (s *groupServer) GetFullJoinGroupIDs(ctx context.Context, req *pbgroup.GetFullJoinGroupIDsReq) (*pbgroup.GetFullJoinGroupIDsResp, error) {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
-	vl, err := g.db.FindMaxJoinGroupVersionCache(ctx, req.UserID)
+	vl, err := s.db.FindMaxJoinGroupVersionCache(ctx, req.UserID)
 	if err != nil {
 		return nil, err
 	}
-	groupIDs, err := g.db.FindJoinGroupID(ctx, req.UserID)
+	groupIDs, err := s.db.FindJoinGroupID(ctx, req.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -63,11 +68,11 @@ func (g *groupServer) GetFullJoinGroupIDs(ctx context.Context, req *pbgroup.GetF
 	}, nil
 }
 
-func (g *groupServer) GetIncrementalGroupMember(ctx context.Context, req *pbgroup.GetIncrementalGroupMemberReq) (*pbgroup.GetIncrementalGroupMemberResp, error) {
-	if err := g.checkAdminOrInGroup(ctx, req.GroupID); err != nil {
+func (s *groupServer) GetIncrementalGroupMember(ctx context.Context, req *pbgroup.GetIncrementalGroupMemberReq) (*pbgroup.GetIncrementalGroupMemberResp, error) {
+	if err := s.checkAdminOrInGroup(ctx, req.GroupID); err != nil {
 		return nil, err
 	}
-	group, err := g.db.TakeGroup(ctx, req.GroupID)
+	group, err := s.db.TakeGroup(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +89,7 @@ func (g *groupServer) GetIncrementalGroupMember(ctx context.Context, req *pbgrou
 		VersionID:     req.VersionID,
 		VersionNumber: req.Version,
 		Version: func(ctx context.Context, groupID string, version uint, limit int) (*model.VersionLog, error) {
-			vl, err := g.db.FindMemberIncrVersion(ctx, groupID, version, limit)
+			vl, err := s.db.FindMemberIncrVersion(ctx, groupID, version, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -107,9 +112,9 @@ func (g *groupServer) GetIncrementalGroupMember(ctx context.Context, req *pbgrou
 			}
 			return vl, nil
 		},
-		CacheMaxVersion: g.db.FindMaxGroupMemberVersionCache,
+		CacheMaxVersion: s.db.FindMaxGroupMemberVersionCache,
 		Find: func(ctx context.Context, ids []string) ([]*sdkws.GroupMemberFullInfo, error) {
-			return g.getGroupMembersInfo(ctx, req.GroupID, ids)
+			return s.getGroupMembersInfo(ctx, req.GroupID, ids)
 		},
 		Resp: func(version *model.VersionLog, delIDs []string, insertList, updateList []*sdkws.GroupMemberFullInfo, full bool) *pbgroup.GetIncrementalGroupMemberResp {
 			return &pbgroup.GetIncrementalGroupMemberResp{
@@ -128,21 +133,21 @@ func (g *groupServer) GetIncrementalGroupMember(ctx context.Context, req *pbgrou
 		return nil, err
 	}
 	if resp.Full || hasGroupUpdate {
-		count, err := g.db.FindGroupMemberNum(ctx, group.GroupID)
+		count, err := s.db.FindGroupMemberNum(ctx, group.GroupID)
 		if err != nil {
 			return nil, err
 		}
-		owner, err := g.db.TakeGroupOwner(ctx, group.GroupID)
+		owner, err := s.db.TakeGroupOwner(ctx, group.GroupID)
 		if err != nil {
 			return nil, err
 		}
-		resp.Group = g.groupDB2PB(group, owner.UserID, count)
+		resp.Group = s.groupDB2PB(group, owner.UserID, count)
 	}
 	return resp, nil
 }
 
 func (g *groupServer) GetIncrementalJoinGroup(ctx context.Context, req *pbgroup.GetIncrementalJoinGroupReq) (*pbgroup.GetIncrementalJoinGroupResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 	opt := incrversion.Option[*sdkws.GroupInfo, pbgroup.GetIncrementalJoinGroupResp]{

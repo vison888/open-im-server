@@ -18,16 +18,17 @@ import (
 	"os"
 	"path/filepath"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/field"
+	"gopkg.in/yaml.v3"
 )
 
 const (
-	DefaultFolderPath = "../config/"
+	FileName             = "config.yaml"
+	NotificationFileName = "notification.yaml"
+	DefaultFolderPath    = "../config/"
 )
 
 // return absolude path join ../config/, this is k8s container config path.

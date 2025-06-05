@@ -83,8 +83,6 @@ services:
       - ETCD_INITIAL_CLUSTER=s1=http://0.0.0.0:2380
       - ETCD_INITIAL_CLUSTER_TOKEN=tkn
       - ETCD_INITIAL_CLUSTER_STATE=new
-    volumes:
-      - "${DATA_DIR}/components/etcd:/etcd-data"
     restart: always
     networks:
       - openim
@@ -212,6 +210,5 @@ services:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
       - '--path.rootfs=/rootfs'
-      - '--web.listen-address=:19100'
+      - '--web.listen-address=:${NODE_EXPORTER_PORT}'
     network_mode: host
-

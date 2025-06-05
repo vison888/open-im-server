@@ -3,9 +3,11 @@ package push
 import (
 	"context"
 
+	"github.com/IBM/sarama"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/options"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/kafka"
 	"github.com/openimsdk/protocol/constant"
 	pbpush "github.com/openimsdk/protocol/push"
 	"github.com/openimsdk/protocol/sdkws"
@@ -16,16 +18,34 @@ import (
 )
 
 type OfflinePushConsumerHandler struct {
-	offlinePusher offlinepush.OfflinePusher
+	OfflinePushConsumerGroup *kafka.MConsumerGroup
+	offlinePusher            offlinepush.OfflinePusher
 }
 
-func NewOfflinePushConsumerHandler(offlinePusher offlinepush.OfflinePusher) *OfflinePushConsumerHandler {
-	return &OfflinePushConsumerHandler{
-		offlinePusher: offlinePusher,
+func NewOfflinePushConsumerHandler(config *Config, offlinePusher offlinepush.OfflinePusher) (*OfflinePushConsumerHandler, error) {
+	var offlinePushConsumerHandler OfflinePushConsumerHandler
+	var err error
+	offlinePushConsumerHandler.offlinePusher = offlinePusher
+	offlinePushConsumerHandler.OfflinePushConsumerGroup, err = kafka.NewMConsumerGroup(config.KafkaConfig.Build(), config.KafkaConfig.ToOfflineGroupID,
+		[]string{config.KafkaConfig.ToOfflinePushTopic}, true)
+	if err != nil {
+		return nil, err
 	}
+	return &offlinePushConsumerHandler, nil
 }
 
-func (o *OfflinePushConsumerHandler) HandleMsg2OfflinePush(ctx context.Context, msg []byte) {
+func (*OfflinePushConsumerHandler) Setup(sarama.ConsumerGroupSession) error   { return nil }
+func (*OfflinePushConsumerHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
+func (o *OfflinePushConsumerHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	for msg := range claim.Messages() {
+		ctx := o.OfflinePushConsumerGroup.GetContextFromMsg(msg)
+		o.handleMsg2OfflinePush(ctx, msg.Value)
+		sess.MarkMessage(msg, "")
+	}
+	return nil
+}
+
+func (o *OfflinePushConsumerHandler) handleMsg2OfflinePush(ctx context.Context, msg []byte) {
 	offlinePushMsg := pbpush.PushMsgReq{}
 	if err := proto.Unmarshal(msg, &offlinePushMsg); err != nil {
 		log.ZError(ctx, "offline push Unmarshal msg err", err, "msg", string(msg))

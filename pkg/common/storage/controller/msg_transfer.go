@@ -4,11 +4,11 @@ import (
 	"context"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/kafka"
 	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/tools/mq"
 	"github.com/openimsdk/tools/utils/datautil"
-	"google.golang.org/protobuf/proto"
 
+	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
@@ -33,30 +33,30 @@ type MsgTransferDatabase interface {
 	SetHasReadSeqToDB(ctx context.Context, conversationID string, userSeqMap map[string]int64) error
 
 	// to mq
-	MsgToPushMQ(ctx context.Context, key, conversationID string, msg2mq *sdkws.MsgData) error
+	MsgToPushMQ(ctx context.Context, key, conversationID string, msg2mq *sdkws.MsgData) (int32, int64, error)
 	MsgToMongoMQ(ctx context.Context, key, conversationID string, msgs []*sdkws.MsgData, lastSeq int64) error
 }
 
-func NewMsgTransferDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUser cache.SeqUser, seqConversation cache.SeqConversationCache, mongoProducer, pushProducer mq.Producer) (MsgTransferDatabase, error) {
-	//conf, err := kafka.BuildProducerConfig(*kafkaConf.Build())
-	//if err != nil {
-	//	return nil, err
-	//}
-	//producerToMongo, err := kafka.NewKafkaProducerV2(conf, kafkaConf.Address, kafkaConf.ToMongoTopic)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//producerToPush, err := kafka.NewKafkaProducerV2(conf, kafkaConf.Address, kafkaConf.ToPushTopic)
-	//if err != nil {
-	//	return nil, err
-	//}
+func NewMsgTransferDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUser cache.SeqUser, seqConversation cache.SeqConversationCache, kafkaConf *config.Kafka) (MsgTransferDatabase, error) {
+	conf, err := kafka.BuildProducerConfig(*kafkaConf.Build())
+	if err != nil {
+		return nil, err
+	}
+	producerToMongo, err := kafka.NewKafkaProducer(conf, kafkaConf.Address, kafkaConf.ToMongoTopic)
+	if err != nil {
+		return nil, err
+	}
+	producerToPush, err := kafka.NewKafkaProducer(conf, kafkaConf.Address, kafkaConf.ToPushTopic)
+	if err != nil {
+		return nil, err
+	}
 	return &msgTransferDatabase{
 		msgDocDatabase:  msgDocModel,
 		msgCache:        msg,
 		seqUser:         seqUser,
 		seqConversation: seqConversation,
-		producerToMongo: mongoProducer,
-		producerToPush:  pushProducer,
+		producerToMongo: producerToMongo,
+		producerToPush:  producerToPush,
 	}, nil
 }
 
@@ -66,8 +66,8 @@ type msgTransferDatabase struct {
 	msgCache        cache.MsgCache
 	seqConversation cache.SeqConversationCache
 	seqUser         cache.SeqUser
-	producerToMongo mq.Producer
-	producerToPush  mq.Producer
+	producerToMongo *kafka.Producer
+	producerToPush  *kafka.Producer
 }
 
 func (db *msgTransferDatabase) BatchInsertChat2DB(ctx context.Context, conversationID string, msgList []*sdkws.MsgData, currentMaxSeq int64) error {
@@ -81,10 +81,42 @@ func (db *msgTransferDatabase) BatchInsertChat2DB(ctx context.Context, conversat
 			continue
 		}
 		seqs[i] = msg.Seq
+		var offlinePushModel *model.OfflinePushModel
+		if msg.OfflinePushInfo != nil {
+			offlinePushModel = &model.OfflinePushModel{
+				Title:         msg.OfflinePushInfo.Title,
+				Desc:          msg.OfflinePushInfo.Desc,
+				Ex:            msg.OfflinePushInfo.Ex,
+				IOSPushSound:  msg.OfflinePushInfo.IOSPushSound,
+				IOSBadgeCount: msg.OfflinePushInfo.IOSBadgeCount,
+			}
+		}
 		if msg.Status == constant.MsgStatusSending {
 			msg.Status = constant.MsgStatusSendSuccess
 		}
-		msgs[i] = convert.MsgPb2DB(msg)
+		msgs[i] = &model.MsgDataModel{
+			SendID:           msg.SendID,
+			RecvID:           msg.RecvID,
+			GroupID:          msg.GroupID,
+			ClientMsgID:      msg.ClientMsgID,
+			ServerMsgID:      msg.ServerMsgID,
+			SenderPlatformID: msg.SenderPlatformID,
+			SenderNickname:   msg.SenderNickname,
+			SenderFaceURL:    msg.SenderFaceURL,
+			SessionType:      msg.SessionType,
+			MsgFrom:          msg.MsgFrom,
+			ContentType:      msg.ContentType,
+			Content:          string(msg.Content),
+			Seq:              msg.Seq,
+			SendTime:         msg.SendTime,
+			CreateTime:       msg.CreateTime,
+			Status:           msg.Status,
+			Options:          msg.Options,
+			OfflinePush:      offlinePushModel,
+			AtUserIDList:     msg.AtUserIDList,
+			AttachedInfo:     msg.AttachedInfo,
+			Ex:               msg.Ex,
+		}
 	}
 	if err := db.BatchInsertBlock(ctx, conversationID, msgs, updateKeyMsg, msgList[0].Seq); err != nil {
 		return err
@@ -250,25 +282,19 @@ func (db *msgTransferDatabase) SetHasReadSeqToDB(ctx context.Context, conversati
 	return nil
 }
 
-func (db *msgTransferDatabase) MsgToPushMQ(ctx context.Context, key, conversationID string, msg2mq *sdkws.MsgData) error {
-	data, err := proto.Marshal(&pbmsg.PushMsgDataToMQ{MsgData: msg2mq, ConversationID: conversationID})
+func (db *msgTransferDatabase) MsgToPushMQ(ctx context.Context, key, conversationID string, msg2mq *sdkws.MsgData) (int32, int64, error) {
+	partition, offset, err := db.producerToPush.SendMessage(ctx, key, &pbmsg.PushMsgDataToMQ{MsgData: msg2mq, ConversationID: conversationID})
 	if err != nil {
-		return err
+		log.ZError(ctx, "MsgToPushMQ", err, "key", key, "msg2mq", msg2mq)
+		return 0, 0, err
 	}
-	if err := db.producerToPush.SendMessage(ctx, key, data); err != nil {
-		log.ZError(ctx, "MsgToPushMQ", err, "key", key, "conversationID", conversationID)
-		return err
-	}
-	return nil
+	return partition, offset, nil
 }
 
 func (db *msgTransferDatabase) MsgToMongoMQ(ctx context.Context, key, conversationID string, messages []*sdkws.MsgData, lastSeq int64) error {
 	if len(messages) > 0 {
-		data, err := proto.Marshal(&pbmsg.MsgDataToMongoByMQ{LastSeq: lastSeq, ConversationID: conversationID, MsgData: messages})
+		_, _, err := db.producerToMongo.SendMessage(ctx, key, &pbmsg.MsgDataToMongoByMQ{LastSeq: lastSeq, ConversationID: conversationID, MsgData: messages})
 		if err != nil {
-			return err
-		}
-		if err := db.producerToMongo.SendMessage(ctx, key, data); err != nil {
 			log.ZError(ctx, "MsgToMongoMQ", err, "key", key, "conversationID", conversationID, "lastSeq", lastSeq)
 			return err
 		}

@@ -23,8 +23,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 
-	"go.mongodb.org/mongo-driver/mongo"
-
 	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
@@ -44,6 +42,7 @@ import (
 	"github.com/openimsdk/tools/mcontext"
 	"github.com/openimsdk/tools/utils/datautil"
 	"github.com/openimsdk/tools/utils/stringutil"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // GroupApplicationReceiver
@@ -244,7 +243,7 @@ func (g *NotificationSender) fillUserByUserID(ctx context.Context, userID string
 		return errs.ErrInternalServer.WrapMsg("**sdkws.GroupMemberFullInfo is nil")
 	}
 	if groupID != "" {
-		if authverify.CheckUserIsAdmin(ctx, userID) {
+		if authverify.IsManagerUserID(userID, g.config.Share.IMAdminUserID) {
 			*targetUser = &sdkws.GroupMemberFullInfo{
 				GroupID:        groupID,
 				UserID:         userID,

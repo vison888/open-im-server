@@ -18,8 +18,6 @@ import (
 	"context"
 
 	"github.com/openimsdk/open-im-server/v3/internal/api"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/startrpc"
 	"github.com/openimsdk/open-im-server/v3/version"
 	"github.com/openimsdk/tools/system/program"
 	"github.com/spf13/cobra"
@@ -36,33 +34,13 @@ func NewApiCmd() *ApiCmd {
 	var apiConfig api.Config
 	ret := &ApiCmd{apiConfig: &apiConfig}
 	ret.configMap = map[string]any{
-		config.DiscoveryConfigFilename:          &apiConfig.Discovery,
-		config.KafkaConfigFileName:              &apiConfig.Kafka,
-		config.LocalCacheConfigFileName:         &apiConfig.LocalCache,
-		config.LogConfigFileName:                &apiConfig.Log,
-		config.MinioConfigFileName:              &apiConfig.Minio,
-		config.MongodbConfigFileName:            &apiConfig.Mongo,
-		config.NotificationFileName:             &apiConfig.Notification,
-		config.OpenIMAPICfgFileName:             &apiConfig.API,
-		config.OpenIMCronTaskCfgFileName:        &apiConfig.CronTask,
-		config.OpenIMMsgGatewayCfgFileName:      &apiConfig.MsgGateway,
-		config.OpenIMMsgTransferCfgFileName:     &apiConfig.MsgTransfer,
-		config.OpenIMPushCfgFileName:            &apiConfig.Push,
-		config.OpenIMRPCAuthCfgFileName:         &apiConfig.Auth,
-		config.OpenIMRPCConversationCfgFileName: &apiConfig.Conversation,
-		config.OpenIMRPCFriendCfgFileName:       &apiConfig.Friend,
-		config.OpenIMRPCGroupCfgFileName:        &apiConfig.Group,
-		config.OpenIMRPCMsgCfgFileName:          &apiConfig.Msg,
-		config.OpenIMRPCThirdCfgFileName:        &apiConfig.Third,
-		config.OpenIMRPCUserCfgFileName:         &apiConfig.User,
-		config.RedisConfigFileName:              &apiConfig.Redis,
-		config.ShareFileName:                    &apiConfig.Share,
-		config.WebhooksConfigFileName:           &apiConfig.Webhooks,
+		OpenIMAPICfgFileName:    &apiConfig.API,
+		ShareFileName:           &apiConfig.Share,
+		DiscoveryConfigFilename: &apiConfig.Discovery,
 	}
 	ret.RootCmd = NewRootCmd(program.GetProcessName(), WithConfigMap(ret.configMap))
 	ret.ctx = context.WithValue(context.Background(), "version", version.Version)
 	ret.Command.RunE = func(cmd *cobra.Command, args []string) error {
-		apiConfig.ConfigPath = config.Path(ret.configPath)
 		return ret.runE()
 	}
 	return ret
@@ -73,22 +51,5 @@ func (a *ApiCmd) Exec() error {
 }
 
 func (a *ApiCmd) runE() error {
-	a.apiConfig.Index = config.Index(a.Index())
-	prometheus := config.Prometheus{
-		Enable: a.apiConfig.API.Prometheus.Enable,
-		Ports:  a.apiConfig.API.Prometheus.Ports,
-	}
-	return startrpc.Start(
-		a.ctx, &a.apiConfig.Discovery,
-		&prometheus,
-		a.apiConfig.API.Api.ListenIP, "",
-		a.apiConfig.API.Prometheus.AutoSetPorts,
-		nil, int(a.apiConfig.Index),
-		a.apiConfig.Discovery.RpcService.MessageGateway,
-		&a.apiConfig.Notification,
-		a.apiConfig,
-		[]string{},
-		[]string{},
-		api.Start,
-	)
+	return api.Start(a.ctx, a.Index(), a.apiConfig)
 }

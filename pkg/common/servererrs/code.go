@@ -37,8 +37,7 @@ const (
 
 // General error codes.
 const (
-	NoError = 0 // No error
-
+	NoError       = 0     // No error
 	DatabaseError = 90002 // Database error (redis/mysql, etc.)
 	NetworkError  = 90004 // Network error
 	DataError     = 90007 // Data error
@@ -46,12 +45,11 @@ const (
 	CallbackError = 80000
 
 	// General error codes.
-	ServerInternalError   = 500  // Server internal error
-	ArgsError             = 1001 // Input parameter error
-	NoPermissionError     = 1002 // Insufficient permission
-	DuplicateKeyError     = 1003
-	RecordNotFoundError   = 1004 // Record does not exist
-	SecretNotChangedError = 1050 // secret not changed
+	ServerInternalError = 500  // Server internal error
+	ArgsError           = 1001 // Input parameter error
+	NoPermissionError   = 1002 // Insufficient permission
+	DuplicateKeyError   = 1003
+	RecordNotFoundError = 1004 // Record does not exist
 
 	// Account error codes.
 	UserIDNotFoundError    = 1101 // UserID does not exist or is not registered

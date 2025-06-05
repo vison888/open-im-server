@@ -15,19 +15,12 @@
 package api
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"sync"
-
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/mitchellh/mapstructure"
-	"google.golang.org/protobuf/reflect/protoreflect"
-
 	"github.com/openimsdk/open-im-server/v3/pkg/apistruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/msg"
@@ -42,39 +35,6 @@ import (
 	"github.com/openimsdk/tools/utils/jsonutil"
 	"github.com/openimsdk/tools/utils/timeutil"
 )
-
-var (
-	msgDataDescriptor     []protoreflect.FieldDescriptor
-	msgDataDescriptorOnce sync.Once
-)
-
-func getMsgDataDescriptor() []protoreflect.FieldDescriptor {
-	msgDataDescriptorOnce.Do(func() {
-		skip := make(map[string]struct{})
-		respFields := new(msg.SendMsgResp).ProtoReflect().Descriptor().Fields()
-		for i := 0; i < respFields.Len(); i++ {
-			field := respFields.Get(i)
-			if !field.HasJSONName() {
-				continue
-			}
-			skip[field.JSONName()] = struct{}{}
-		}
-		fields := new(sdkws.MsgData).ProtoReflect().Descriptor().Fields()
-		num := fields.Len()
-		msgDataDescriptor = make([]protoreflect.FieldDescriptor, 0, num)
-		for i := 0; i < num; i++ {
-			field := fields.Get(i)
-			if !field.HasJSONName() {
-				continue
-			}
-			if _, ok := skip[field.JSONName()]; ok {
-				continue
-			}
-			msgDataDescriptor = append(msgDataDescriptor, fields.Get(i))
-		}
-	})
-	return msgDataDescriptor
-}
 
 type MessageApi struct {
 	Client        msg.MsgClient
@@ -211,8 +171,6 @@ func (m *MessageApi) getSendMsgReq(c *gin.Context, req apistruct.SendMsg) (sendM
 		data = apistruct.AtElem{}
 	case constant.Custom:
 		data = apistruct.CustomElem{}
-	case constant.MarkdownText:
-		data = apistruct.MarkdownTextElem{}
 	case constant.OANotification:
 		data = apistruct.OANotificationElem{}
 		req.SessionType = constant.NotificationChatType
@@ -232,42 +190,6 @@ func (m *MessageApi) getSendMsgReq(c *gin.Context, req apistruct.SendMsg) (sendM
 	return m.newUserSendMsgReq(c, &req), nil
 }
 
-func (m *MessageApi) getModifyFields(req, respModify *sdkws.MsgData) map[string]any {
-	if req == nil || respModify == nil {
-		return nil
-	}
-	fields := make(map[string]any)
-	reqProtoReflect := req.ProtoReflect()
-	respProtoReflect := respModify.ProtoReflect()
-	for _, descriptor := range getMsgDataDescriptor() {
-		reqValue := reqProtoReflect.Get(descriptor)
-		respValue := respProtoReflect.Get(descriptor)
-		if !reqValue.Equal(respValue) {
-			val := respValue.Interface()
-			name := descriptor.JSONName()
-			if name == "content" {
-				if bs, ok := val.([]byte); ok {
-					val = string(bs)
-				}
-			}
-			fields[name] = val
-		}
-	}
-	if len(fields) == 0 {
-		fields = nil
-	}
-	return fields
-}
-
-func (m *MessageApi) ginRespSendMsg(c *gin.Context, req *msg.SendMsgReq, resp *msg.SendMsgResp) {
-	res := m.getModifyFields(req.MsgData, resp.Modify)
-	resp.Modify = nil
-	apiresp.GinSuccess(c, &apistruct.SendMsgResp{
-		SendMsgResp: resp,
-		Modify:      res,
-	})
-}
-
 // SendMessage handles the sending of a message. It's an HTTP handler function to be used with Gin framework.
 func (m *MessageApi) SendMessage(c *gin.Context) {
 	// Initialize a request struct for sending a message.
@@ -281,7 +203,7 @@ func (m *MessageApi) SendMessage(c *gin.Context) {
 	}
 
 	// Check if the user has the app manager role.
-	if !authverify.IsAdmin(c) {
+	if !authverify.IsAppManagerUid(c, m.imAdminUserID) {
 		// Respond with a permission error if the user is not an app manager.
 		apiresp.GinError(c, errs.ErrNoPermission.WrapMsg("only app manager can send message"))
 		return
@@ -321,49 +243,29 @@ func (m *MessageApi) SendMessage(c *gin.Context) {
 	}
 
 	// Respond with a success message and the response payload.
-	m.ginRespSendMsg(c, sendMsgReq, respPb)
+	apiresp.GinSuccess(c, respPb)
 }
 
 func (m *MessageApi) SendBusinessNotification(c *gin.Context) {
 	req := struct {
-		Key              string `json:"key"`
-		Data             string `json:"data"`
-		SendUserID       string `json:"sendUserID" binding:"required"`
-		RecvUserID       string `json:"recvUserID"`
-		RecvGroupID      string `json:"recvGroupID"`
-		SendMsg          bool   `json:"sendMsg"`
-		ReliabilityLevel *int   `json:"reliabilityLevel"`
+		Key        string `json:"key"`
+		Data       string `json:"data"`
+		SendUserID string `json:"sendUserID" binding:"required"`
+		RecvUserID string `json:"recvUserID" binding:"required"`
 	}{}
 	if err := c.BindJSON(&req); err != nil {
 		apiresp.GinError(c, errs.ErrArgs.WithDetail(err.Error()).Wrap())
 		return
 	}
-	if req.RecvUserID == "" && req.RecvGroupID == "" {
-		apiresp.GinError(c, errs.ErrArgs.WrapMsg("recvUserID and recvGroupID cannot be empty at the same time"))
-		return
-	}
-	if req.RecvUserID != "" && req.RecvGroupID != "" {
-		apiresp.GinError(c, errs.ErrArgs.WrapMsg("recvUserID and recvGroupID cannot be set at the same time"))
-		return
-	}
-	var sessionType int32
-	if req.RecvUserID != "" {
-		sessionType = constant.SingleChatType
-	} else {
-		sessionType = constant.ReadGroupChatType
-	}
-	if req.ReliabilityLevel == nil {
-		req.ReliabilityLevel = datautil.ToPtr(1)
-	}
-	if !authverify.IsAdmin(c) {
+
+	if !authverify.IsAppManagerUid(c, m.imAdminUserID) {
 		apiresp.GinError(c, errs.ErrNoPermission.WrapMsg("only app manager can send message"))
 		return
 	}
 	sendMsgReq := msg.SendMsgReq{
 		MsgData: &sdkws.MsgData{
-			SendID:  req.SendUserID,
-			RecvID:  req.RecvUserID,
-			GroupID: req.RecvGroupID,
+			SendID: req.SendUserID,
+			RecvID: req.RecvUserID,
 			Content: []byte(jsonutil.StructToJsonString(&sdkws.NotificationElem{
 				Detail: jsonutil.StructToJsonString(&struct {
 					Key  string `json:"key"`
@@ -372,12 +274,12 @@ func (m *MessageApi) SendBusinessNotification(c *gin.Context) {
 			})),
 			MsgFrom:     constant.SysMsgType,
 			ContentType: constant.BusinessNotification,
-			SessionType: sessionType,
+			SessionType: constant.SingleChatType,
 			CreateTime:  timeutil.GetCurrentTimestampByMill(),
 			ClientMsgID: idutil.GetMsgIDByMD5(mcontext.GetOpUserID(c)),
 			Options: config.GetOptionsByNotification(config.NotificationConfig{
-				IsSendMsg:        req.SendMsg,
-				ReliabilityLevel: *req.ReliabilityLevel,
+				IsSendMsg:        false,
+				ReliabilityLevel: 1,
 				UnreadCount:      false,
 			}, nil),
 		},
@@ -387,7 +289,7 @@ func (m *MessageApi) SendBusinessNotification(c *gin.Context) {
 		apiresp.GinError(c, err)
 		return
 	}
-	m.ginRespSendMsg(c, &sendMsgReq, respPb)
+	apiresp.GinSuccess(c, respPb)
 }
 
 func (m *MessageApi) BatchSendMsg(c *gin.Context) {
@@ -399,7 +301,7 @@ func (m *MessageApi) BatchSendMsg(c *gin.Context) {
 		apiresp.GinError(c, errs.ErrArgs.WithDetail(err.Error()).Wrap())
 		return
 	}
-	if err := authverify.CheckAdmin(c); err != nil {
+	if err := authverify.CheckAdmin(c, m.imAdminUserID); err != nil {
 		apiresp.GinError(c, errs.ErrNoPermission.WrapMsg("only app manager can send message"))
 		return
 	}
@@ -441,105 +343,9 @@ func (m *MessageApi) BatchSendMsg(c *gin.Context) {
 			ClientMsgID: rpcResp.ClientMsgID,
 			SendTime:    rpcResp.SendTime,
 			RecvID:      recvID,
-			Modify:      m.getModifyFields(sendMsgReq.MsgData, rpcResp.Modify),
 		})
 	}
 	apiresp.GinSuccess(c, resp)
-}
-
-func (m *MessageApi) SendSimpleMessage(c *gin.Context) {
-	encodedKey, ok := c.GetQuery(webhook.Key)
-	if !ok {
-		apiresp.GinError(c, errs.ErrArgs.WithDetail("missing key in query").Wrap())
-		return
-	}
-
-	decodedData, err := base64.StdEncoding.DecodeString(encodedKey)
-	if err != nil {
-		apiresp.GinError(c, errs.ErrArgs.WithDetail(err.Error()).Wrap())
-		return
-	}
-	var (
-		req        apistruct.SendSingleMsgReq
-		keyMsgData apistruct.KeyMsgData
-
-		sendID      string
-		sessionType int32
-		recvID      string
-	)
-	if err = c.BindJSON(&req); err != nil {
-		apiresp.GinError(c, errs.ErrArgs.WithDetail(err.Error()).Wrap())
-		return
-	}
-	err = json.Unmarshal(decodedData, &keyMsgData)
-	if err != nil {
-		apiresp.GinError(c, errs.ErrArgs.WithDetail(err.Error()).Wrap())
-		return
-	}
-	if keyMsgData.GroupID != "" {
-		sessionType = constant.ReadGroupChatType
-		sendID = req.SendID
-	} else {
-		sessionType = constant.SingleChatType
-		sendID = keyMsgData.RecvID
-		recvID = keyMsgData.SendID
-	}
-	// check param
-	if keyMsgData.SendID == "" {
-		apiresp.GinError(c, errs.ErrArgs.WithDetail("missing recvID or GroupID").Wrap())
-		return
-	}
-	if sendID == "" {
-		apiresp.GinError(c, errs.ErrArgs.WithDetail("missing sendID").Wrap())
-		return
-	}
-
-	content, err := jsonutil.JsonMarshal(apistruct.MarkdownTextElem{Content: req.Content})
-	if err != nil {
-		apiresp.GinError(c, errs.Wrap(err))
-		return
-	}
-	msgData := &sdkws.MsgData{
-		SendID:           sendID,
-		RecvID:           recvID,
-		GroupID:          keyMsgData.GroupID,
-		ClientMsgID:      idutil.GetMsgIDByMD5(sendID),
-		SenderPlatformID: constant.AdminPlatformID,
-		SessionType:      sessionType,
-		MsgFrom:          constant.UserMsgType,
-		ContentType:      constant.MarkdownText,
-		Content:          content,
-		OfflinePushInfo:  req.OfflinePushInfo,
-		Ex:               req.Ex,
-	}
-
-	sendReq := &msg.SendSimpleMsgReq{
-		MsgData: msgData,
-	}
-
-	respPb, err := m.Client.SendSimpleMsg(c, sendReq)
-	if err != nil {
-		apiresp.GinError(c, err)
-		return
-	}
-
-	var status = constant.MsgSendSuccessed
-
-	_, err = m.Client.SetSendMsgStatus(c, &msg.SetSendMsgStatusReq{
-		Status: int32(status),
-	})
-
-	if err != nil {
-		apiresp.GinError(c, err)
-		return
-	}
-
-	m.ginRespSendMsg(c, &msg.SendMsgReq{MsgData: sendReq.MsgData}, &msg.SendMsgResp{
-		ServerMsgID: respPb.ServerMsgID,
-		ClientMsgID: respPb.ClientMsgID,
-		SendTime:    respPb.SendTime,
-		Modify:      respPb.Modify,
-	})
 }
 
 func (m *MessageApi) CheckMsgIsSendSuccess(c *gin.Context) {
@@ -563,5 +369,13 @@ func (m *MessageApi) SearchMsg(c *gin.Context) {
 }
 
 func (m *MessageApi) GetServerTime(c *gin.Context) {
+	a2r.Call(c, msg.MsgClient.GetServerTime, m.Client)
+}
+
+func (m *MessageApi) GetStreamMsg(c *gin.Context) {
+	a2r.Call(c, msg.MsgClient.GetServerTime, m.Client)
+}
+
+func (m *MessageApi) AppendStreamMsg(c *gin.Context) {
 	a2r.Call(c, msg.MsgClient.GetServerTime, m.Client)
 }

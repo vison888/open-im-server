@@ -17,14 +17,11 @@ package msg
 import (
 	"context"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
-	"google.golang.org/protobuf/proto"
-
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
 	"github.com/openimsdk/open-im-server/v3/pkg/util/conversationutil"
 	"github.com/openimsdk/protocol/constant"
-	pbconv "github.com/openimsdk/protocol/conversation"
+	pbconversation "github.com/openimsdk/protocol/conversation"
 	pbmsg "github.com/openimsdk/protocol/msg"
 	"github.com/openimsdk/protocol/sdkws"
 	"github.com/openimsdk/protocol/wrapperspb"
@@ -35,38 +32,23 @@ import (
 )
 
 func (m *msgServer) SendMsg(ctx context.Context, req *pbmsg.SendMsgReq) (*pbmsg.SendMsgResp, error) {
-	if req.MsgData == nil {
-		return nil, errs.ErrArgs.WrapMsg("msgData is nil")
+	if req.MsgData != nil {
+		m.encapsulateMsgData(req.MsgData)
+		switch req.MsgData.SessionType {
+		case constant.SingleChatType:
+			return m.sendMsgSingleChat(ctx, req)
+		case constant.NotificationChatType:
+			return m.sendMsgNotification(ctx, req)
+		case constant.ReadGroupChatType:
+			return m.sendMsgGroupChat(ctx, req)
+		default:
+			return nil, errs.ErrArgs.WrapMsg("unknown sessionType")
+		}
 	}
-	if err := authverify.CheckAccess(ctx, req.MsgData.SendID); err != nil {
-		return nil, err
-	}
-	before := new(*sdkws.MsgData)
-	resp, err := m.sendMsg(ctx, req, before)
-	if err != nil {
-		return nil, err
-	}
-	if *before != nil && proto.Equal(*before, req.MsgData) == false {
-		resp.Modify = req.MsgData
-	}
-	return resp, nil
+	return nil, errs.ErrArgs.WrapMsg("msgData is nil")
 }
 
-func (m *msgServer) sendMsg(ctx context.Context, req *pbmsg.SendMsgReq, before **sdkws.MsgData) (*pbmsg.SendMsgResp, error) {
-	m.encapsulateMsgData(req.MsgData)
-	switch req.MsgData.SessionType {
-	case constant.SingleChatType:
-		return m.sendMsgSingleChat(ctx, req, before)
-	case constant.NotificationChatType:
-		return m.sendMsgNotification(ctx, req, before)
-	case constant.ReadGroupChatType:
-		return m.sendMsgGroupChat(ctx, req, before)
-	default:
-		return nil, errs.ErrArgs.WrapMsg("unknown sessionType")
-	}
-}
-
-func (m *msgServer) sendMsgGroupChat(ctx context.Context, req *pbmsg.SendMsgReq, before **sdkws.MsgData) (resp *pbmsg.SendMsgResp, err error) {
+func (m *msgServer) sendMsgGroupChat(ctx context.Context, req *pbmsg.SendMsgReq) (resp *pbmsg.SendMsgResp, err error) {
 	if err = m.messageVerification(ctx, req); err != nil {
 		prommetrics.GroupChatMsgProcessFailedCounter.Inc()
 		return nil, err
@@ -75,7 +57,7 @@ func (m *msgServer) sendMsgGroupChat(ctx context.Context, req *pbmsg.SendMsgReq,
 	if err = m.webhookBeforeSendGroupMsg(ctx, &m.config.WebhooksConfig.BeforeSendGroupMsg, req); err != nil {
 		return nil, err
 	}
-	if err := m.webhookBeforeMsgModify(ctx, &m.config.WebhooksConfig.BeforeMsgModify, req, before); err != nil {
+	if err := m.webhookBeforeMsgModify(ctx, &m.config.WebhooksConfig.BeforeMsgModify, req); err != nil {
 		return nil, err
 	}
 	err = m.MsgDatabase.MsgToMQ(ctx, conversationutil.GenConversationUniqueKeyForGroup(req.MsgData.GroupID), req.MsgData)
@@ -109,7 +91,7 @@ func (m *msgServer) setConversationAtInfo(nctx context.Context, msg *sdkws.MsgDa
 
 	var atUserID []string
 
-	conversation := &pbconv.ConversationReq{
+	conversation := &pbconversation.ConversationReq{
 		ConversationID:   msgprocessor.GetConversationIDByMsg(msg),
 		ConversationType: msg.SessionType,
 		GroupID:          msg.GroupID,
@@ -157,7 +139,7 @@ func (m *msgServer) setConversationAtInfo(nctx context.Context, msg *sdkws.MsgDa
 	}
 }
 
-func (m *msgServer) sendMsgNotification(ctx context.Context, req *pbmsg.SendMsgReq, before **sdkws.MsgData) (resp *pbmsg.SendMsgResp, err error) {
+func (m *msgServer) sendMsgNotification(ctx context.Context, req *pbmsg.SendMsgReq) (resp *pbmsg.SendMsgResp, err error) {
 	if err := m.MsgDatabase.MsgToMQ(ctx, conversationutil.GenConversationUniqueKeyForSingle(req.MsgData.SendID, req.MsgData.RecvID), req.MsgData); err != nil {
 		return nil, err
 	}
@@ -169,25 +151,32 @@ func (m *msgServer) sendMsgNotification(ctx context.Context, req *pbmsg.SendMsgR
 	return resp, nil
 }
 
-func (m *msgServer) sendMsgSingleChat(ctx context.Context, req *pbmsg.SendMsgReq, before **sdkws.MsgData) (resp *pbmsg.SendMsgResp, err error) {
+func (m *msgServer) sendMsgSingleChat(ctx context.Context, req *pbmsg.SendMsgReq) (resp *pbmsg.SendMsgResp, err error) {
 	if err := m.messageVerification(ctx, req); err != nil {
 		return nil, err
 	}
 	isSend := true
 	isNotification := msgprocessor.IsNotificationByMsg(req.MsgData)
 	if !isNotification {
-		isSend, err = m.modifyMessageByUserMessageReceiveOpt(authverify.WithTempAdmin(ctx), req.MsgData.RecvID, conversationutil.GenConversationIDForSingle(req.MsgData.SendID, req.MsgData.RecvID), constant.SingleChatType, req)
+		isSend, err = m.modifyMessageByUserMessageReceiveOpt(
+			ctx,
+			req.MsgData.RecvID,
+			conversationutil.GenConversationIDForSingle(req.MsgData.SendID, req.MsgData.RecvID),
+			constant.SingleChatType,
+			req,
+		)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if !isSend {
 		prommetrics.SingleChatMsgProcessFailedCounter.Inc()
-		return nil, errs.ErrArgs.WrapMsg("message is not sent")
+		return nil, nil
 	} else {
-		if err := m.webhookBeforeMsgModify(ctx, &m.config.WebhooksConfig.BeforeMsgModify, req, before); err != nil {
+		if err := m.webhookBeforeMsgModify(ctx, &m.config.WebhooksConfig.BeforeMsgModify, req); err != nil {
 			return nil, err
 		}
+
 		if err := m.MsgDatabase.MsgToMQ(ctx, conversationutil.GenConversationUniqueKeyForSingle(req.MsgData.SendID, req.MsgData.RecvID), req.MsgData); err != nil {
 			prommetrics.SingleChatMsgProcessFailedCounter.Inc()
 			return nil, err
@@ -200,26 +189,4 @@ func (m *msgServer) sendMsgSingleChat(ctx context.Context, req *pbmsg.SendMsgReq
 			SendTime:    req.MsgData.SendTime,
 		}, nil
 	}
-}
-
-func (m *msgServer) SendSimpleMsg(ctx context.Context, req *pbmsg.SendSimpleMsgReq) (*pbmsg.SendSimpleMsgResp, error) {
-	if req.MsgData == nil {
-		return nil, errs.ErrArgs.WrapMsg("msg data is nil")
-	}
-	sender, err := m.UserLocalCache.GetUserInfo(ctx, req.MsgData.SendID)
-	if err != nil {
-		return nil, err
-	}
-	req.MsgData.SenderFaceURL = sender.FaceURL
-	req.MsgData.SenderNickname = sender.Nickname
-	resp, err := m.SendMsg(ctx, &pbmsg.SendMsgReq{MsgData: req.MsgData})
-	if err != nil {
-		return nil, err
-	}
-	return &pbmsg.SendSimpleMsgResp{
-		ServerMsgID: resp.ServerMsgID,
-		ClientMsgID: resp.ClientMsgID,
-		SendTime:    resp.SendTime,
-		Modify:      resp.Modify,
-	}, nil
 }

@@ -19,30 +19,29 @@ import (
 	"sort"
 	"time"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
-	"github.com/openimsdk/open-im-server/v3/pkg/dbbuild"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 
-	"google.golang.org/grpc"
-
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/redis"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database/mgo"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
 	dbModel "github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
 	"github.com/openimsdk/open-im-server/v3/pkg/localcache"
 	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
+	"github.com/openimsdk/tools/db/redisutil"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
 	"github.com/openimsdk/protocol/constant"
 	pbconversation "github.com/openimsdk/protocol/conversation"
 	"github.com/openimsdk/protocol/sdkws"
+	"github.com/openimsdk/tools/db/mongoutil"
 	"github.com/openimsdk/tools/discovery"
 	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/log"
 	"github.com/openimsdk/tools/utils/datautil"
+	"google.golang.org/grpc"
 )
 
 type conversationServer struct {
@@ -52,10 +51,9 @@ type conversationServer struct {
 	conversationNotificationSender *ConversationNotificationSender
 	config                         *Config
 
-	webhookClient *webhook.Client
-	userClient    *rpcli.UserClient
-	msgClient     *rpcli.MsgClient
-	groupClient   *rpcli.GroupClient
+	userClient  *rpcli.UserClient
+	msgClient   *rpcli.MsgClient
+	groupClient *rpcli.GroupClient
 }
 
 type Config struct {
@@ -64,18 +62,16 @@ type Config struct {
 	MongodbConfig      config.Mongo
 	NotificationConfig config.Notification
 	Share              config.Share
-	WebhooksConfig     config.Webhooks
 	LocalCacheConfig   config.LocalCache
 	Discovery          config.Discovery
 }
 
-func Start(ctx context.Context, config *Config, client discovery.Conn, server grpc.ServiceRegistrar) error {
-	dbb := dbbuild.NewBuilder(&config.MongodbConfig, &config.RedisConfig)
-	mgocli, err := dbb.Mongo(ctx)
+func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryRegistry, server *grpc.Server) error {
+	mgocli, err := mongoutil.NewMongoDB(ctx, config.MongodbConfig.Build())
 	if err != nil {
 		return err
 	}
-	rdb, err := dbb.Redis(ctx)
+	rdb, err := redisutil.NewRedisClient(ctx, config.RedisConfig.Build())
 	if err != nil {
 		return err
 	}
@@ -83,44 +79,32 @@ func Start(ctx context.Context, config *Config, client discovery.Conn, server gr
 	if err != nil {
 		return err
 	}
-	userConn, err := client.GetConn(ctx, config.Discovery.RpcService.User)
+	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return err
 	}
-	groupConn, err := client.GetConn(ctx, config.Discovery.RpcService.Group)
+	groupConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Group)
 	if err != nil {
 		return err
 	}
-	msgConn, err := client.GetConn(ctx, config.Discovery.RpcService.Msg)
+	msgConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Msg)
 	if err != nil {
 		return err
 	}
-
 	msgClient := rpcli.NewMsgClient(msgConn)
-
-	cs := conversationServer{
-		config:        config,
-		webhookClient: webhook.NewWebhookClient(config.WebhooksConfig.URL),
-		userClient:    rpcli.NewUserClient(userConn),
-		groupClient:   rpcli.NewGroupClient(groupConn),
-		msgClient:     msgClient,
-	}
-
-	cs.conversationNotificationSender = NewConversationNotificationSender(&config.NotificationConfig, msgClient)
-	cs.conversationDatabase = controller.NewConversationDatabase(
-		conversationDB,
-		redis.NewConversationRedis(rdb, &config.LocalCacheConfig, conversationDB),
-		mgocli.GetTx())
-
 	localcache.InitLocalCache(&config.LocalCacheConfig)
-	pbconversation.RegisterConversationServer(server, &cs)
+	pbconversation.RegisterConversationServer(server, &conversationServer{
+		conversationNotificationSender: NewConversationNotificationSender(&config.NotificationConfig, msgClient),
+		conversationDatabase: controller.NewConversationDatabase(conversationDB,
+			redis.NewConversationRedis(rdb, &config.LocalCacheConfig, redis.GetRocksCacheOptions(), conversationDB), mgocli.GetTx()),
+		userClient:  rpcli.NewUserClient(userConn),
+		groupClient: rpcli.NewGroupClient(groupConn),
+		msgClient:   msgClient,
+	})
 	return nil
 }
 
 func (c *conversationServer) GetConversation(ctx context.Context, req *pbconversation.GetConversationReq) (*pbconversation.GetConversationResp, error) {
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
-		return nil, err
-	}
 	conversations, err := c.conversationDatabase.FindConversations(ctx, req.OwnerUserID, []string{req.ConversationID})
 	if err != nil {
 		return nil, err
@@ -134,9 +118,7 @@ func (c *conversationServer) GetConversation(ctx context.Context, req *pbconvers
 }
 
 func (c *conversationServer) GetSortedConversationList(ctx context.Context, req *pbconversation.GetSortedConversationListReq) (resp *pbconversation.GetSortedConversationListResp, err error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
-		return nil, err
-	}
+	log.ZDebug(ctx, "GetSortedConversationList", "seqs", req, "userID", req.UserID)
 	var conversationIDs []string
 	if len(req.ConversationIDs) == 0 {
 		conversationIDs, err = c.conversationDatabase.GetConversationIDs(ctx, req.UserID)
@@ -209,9 +191,6 @@ func (c *conversationServer) GetSortedConversationList(ctx context.Context, req 
 }
 
 func (c *conversationServer) GetAllConversations(ctx context.Context, req *pbconversation.GetAllConversationsReq) (*pbconversation.GetAllConversationsResp, error) {
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
-		return nil, err
-	}
 	conversations, err := c.conversationDatabase.GetUserAllConversation(ctx, req.OwnerUserID)
 	if err != nil {
 		return nil, err
@@ -222,9 +201,6 @@ func (c *conversationServer) GetAllConversations(ctx context.Context, req *pbcon
 }
 
 func (c *conversationServer) GetConversations(ctx context.Context, req *pbconversation.GetConversationsReq) (*pbconversation.GetConversationsResp, error) {
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
-		return nil, err
-	}
 	conversations, err := c.getConversations(ctx, req.OwnerUserID, req.ConversationIDs)
 	if err != nil {
 		return nil, err
@@ -245,9 +221,6 @@ func (c *conversationServer) getConversations(ctx context.Context, ownerUserID s
 }
 
 func (c *conversationServer) SetConversation(ctx context.Context, req *pbconversation.SetConversationReq) (*pbconversation.SetConversationResp, error) {
-	if err := authverify.CheckAccess(ctx, req.GetConversation().GetUserID()); err != nil {
-		return nil, err
-	}
 	var conversation dbModel.Conversation
 	if err := datautil.CopyStructFields(&conversation, req.Conversation); err != nil {
 		return nil, err
@@ -262,18 +235,14 @@ func (c *conversationServer) SetConversation(ctx context.Context, req *pbconvers
 }
 
 func (c *conversationServer) SetConversations(ctx context.Context, req *pbconversation.SetConversationsReq) (*pbconversation.SetConversationsResp, error) {
-	for _, userID := range req.UserIDs {
-		if err := authverify.CheckAccess(ctx, userID); err != nil {
-			return nil, err
-		}
+	if req.Conversation == nil {
+		return nil, errs.ErrArgs.WrapMsg("conversation must not be nil")
 	}
+
 	if req.Conversation.ConversationType == constant.WriteGroupChatType {
 		groupInfo, err := c.groupClient.GetGroupInfo(ctx, req.Conversation.GroupID)
 		if err != nil {
 			return nil, err
-		}
-		if groupInfo == nil {
-			return nil, servererrs.ErrGroupIDNotFound.WrapMsg(req.Conversation.GroupID)
 		}
 		if groupInfo.Status == constant.GroupStatusDismissed {
 			return nil, servererrs.ErrDismissedAlready.WrapMsg("group dismissed")
@@ -301,29 +270,109 @@ func (c *conversationServer) SetConversations(ctx context.Context, req *pbconver
 	conversation.UserID = req.Conversation.UserID
 	conversation.GroupID = req.Conversation.GroupID
 
-	m, conversation, err := UpdateConversationsMap(ctx, req)
-	if err != nil {
-		return nil, err
-	}
+	m := make(map[string]any)
 
-	for userID := range conversationMap {
-		unequal := UserUpdateCheckMap(ctx, userID, req.Conversation, conversationMap[userID])
-
-		if unequal {
-			needUpdateUsersList = append(needUpdateUsersList, userID)
+	setConversationFieldsFunc := func() {
+		if req.Conversation.RecvMsgOpt != nil {
+			conversation.RecvMsgOpt = req.Conversation.RecvMsgOpt.Value
+			m["recv_msg_opt"] = req.Conversation.RecvMsgOpt.Value
+		}
+		if req.Conversation.AttachedInfo != nil {
+			conversation.AttachedInfo = req.Conversation.AttachedInfo.Value
+			m["attached_info"] = req.Conversation.AttachedInfo.Value
+		}
+		if req.Conversation.Ex != nil {
+			conversation.Ex = req.Conversation.Ex.Value
+			m["ex"] = req.Conversation.Ex.Value
+		}
+		if req.Conversation.IsPinned != nil {
+			conversation.IsPinned = req.Conversation.IsPinned.Value
+			m["is_pinned"] = req.Conversation.IsPinned.Value
+		}
+		if req.Conversation.GroupAtType != nil {
+			conversation.GroupAtType = req.Conversation.GroupAtType.Value
+			m["group_at_type"] = req.Conversation.GroupAtType.Value
+		}
+		if req.Conversation.MsgDestructTime != nil {
+			conversation.MsgDestructTime = req.Conversation.MsgDestructTime.Value
+			m["msg_destruct_time"] = req.Conversation.MsgDestructTime.Value
+		}
+		if req.Conversation.IsMsgDestruct != nil {
+			conversation.IsMsgDestruct = req.Conversation.IsMsgDestruct.Value
+			m["is_msg_destruct"] = req.Conversation.IsMsgDestruct.Value
+		}
+		if req.Conversation.BurnDuration != nil {
+			conversation.BurnDuration = req.Conversation.BurnDuration.Value
+			m["burn_duration"] = req.Conversation.BurnDuration.Value
 		}
 	}
 
+	// set need set field in conversation
+	setConversationFieldsFunc()
+
+	for userID := range conversationMap {
+		unequal := len(m)
+
+		if req.Conversation.RecvMsgOpt != nil {
+			if req.Conversation.RecvMsgOpt.Value == conversationMap[userID].RecvMsgOpt {
+				unequal--
+			}
+		}
+
+		if req.Conversation.AttachedInfo != nil {
+			if req.Conversation.AttachedInfo.Value == conversationMap[userID].AttachedInfo {
+				unequal--
+			}
+		}
+
+		if req.Conversation.Ex != nil {
+			if req.Conversation.Ex.Value == conversationMap[userID].Ex {
+				unequal--
+			}
+		}
+		if req.Conversation.IsPinned != nil {
+			if req.Conversation.IsPinned.Value == conversationMap[userID].IsPinned {
+				unequal--
+			}
+		}
+
+		if req.Conversation.GroupAtType != nil {
+			if req.Conversation.GroupAtType.Value == conversationMap[userID].GroupAtType {
+				unequal--
+			}
+		}
+
+		if req.Conversation.MsgDestructTime != nil {
+			if req.Conversation.MsgDestructTime.Value == conversationMap[userID].MsgDestructTime {
+				unequal--
+			}
+		}
+
+		if req.Conversation.IsMsgDestruct != nil {
+			if req.Conversation.IsMsgDestruct.Value == conversationMap[userID].IsMsgDestruct {
+				unequal--
+			}
+		}
+
+		if req.Conversation.BurnDuration != nil {
+			if req.Conversation.BurnDuration.Value == conversationMap[userID].BurnDuration {
+				unequal--
+			}
+		}
+
+		if unequal > 0 {
+			needUpdateUsersList = append(needUpdateUsersList, userID)
+		}
+	}
 	if len(m) != 0 && len(needUpdateUsersList) != 0 {
 		if err := c.conversationDatabase.SetUsersConversationFieldTx(ctx, needUpdateUsersList, &conversation, m); err != nil {
 			return nil, err
 		}
 
-		for _, userID := range needUpdateUsersList {
-			c.conversationNotificationSender.ConversationChangeNotification(ctx, userID, []string{req.Conversation.ConversationID})
+		for _, v := range needUpdateUsersList {
+			c.conversationNotificationSender.ConversationChangeNotification(ctx, v, []string{req.Conversation.ConversationID})
 		}
 	}
-
 	if req.Conversation.IsPrivateChat != nil && req.Conversation.ConversationType != constant.ReadGroupChatType {
 		var conversations []*dbModel.Conversation
 		for _, ownerUserID := range req.UserIDs {
@@ -346,97 +395,58 @@ func (c *conversationServer) SetConversations(ctx context.Context, req *pbconver
 	return &pbconversation.SetConversationsResp{}, nil
 }
 
-func (c *conversationServer) UpdateConversationsByUser(ctx context.Context, req *pbconversation.UpdateConversationsByUserReq) (*pbconversation.UpdateConversationsByUserResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
-		return nil, err
-	}
-	m := make(map[string]any)
-	if req.Ex != nil {
-		m["ex"] = req.Ex.Value
-	}
-	if len(m) > 0 {
-		if err := c.conversationDatabase.UpdateUserConversations(ctx, req.UserID, m); err != nil {
-			return nil, err
-		}
-	}
-	return &pbconversation.UpdateConversationsByUserResp{}, nil
+// Get user IDs with "Do Not Disturb" enabled in super large groups.
+func (c *conversationServer) GetRecvMsgNotNotifyUserIDs(ctx context.Context, req *pbconversation.GetRecvMsgNotNotifyUserIDsReq) (*pbconversation.GetRecvMsgNotNotifyUserIDsResp, error) {
+	return nil, errs.New("deprecated")
 }
 
 // create conversation without notification for msg redis transfer.
-func (c *conversationServer) CreateSingleChatConversations(ctx context.Context, req *pbconversation.CreateSingleChatConversationsReq) (*pbconversation.CreateSingleChatConversationsResp, error) {
-	var conversation dbModel.Conversation
+func (c *conversationServer) CreateSingleChatConversations(ctx context.Context,
+	req *pbconversation.CreateSingleChatConversationsReq,
+) (*pbconversation.CreateSingleChatConversationsResp, error) {
 	switch req.ConversationType {
 	case constant.SingleChatType:
-		// sendUser create
+		var conversation dbModel.Conversation
 		conversation.ConversationID = req.ConversationID
 		conversation.ConversationType = req.ConversationType
 		conversation.OwnerUserID = req.SendID
 		conversation.UserID = req.RecvID
-		if err := c.webhookBeforeCreateSingleChatConversations(ctx, &c.config.WebhooksConfig.BeforeCreateSingleChatConversations, &conversation); err != nil && err != servererrs.ErrCallbackContinue {
-			return nil, err
-		}
-
 		err := c.conversationDatabase.CreateConversation(ctx, []*dbModel.Conversation{&conversation})
 		if err != nil {
 			log.ZWarn(ctx, "create conversation failed", err, "conversation", conversation)
 		}
 
-		c.webhookAfterCreateSingleChatConversations(ctx, &c.config.WebhooksConfig.AfterCreateSingleChatConversations, &conversation)
-
-		// recvUser create
 		conversation2 := conversation
 		conversation2.OwnerUserID = req.RecvID
 		conversation2.UserID = req.SendID
-		if err := c.webhookBeforeCreateSingleChatConversations(ctx, &c.config.WebhooksConfig.BeforeCreateSingleChatConversations, &conversation); err != nil && err != servererrs.ErrCallbackContinue {
-			return nil, err
-		}
-
 		err = c.conversationDatabase.CreateConversation(ctx, []*dbModel.Conversation{&conversation2})
 		if err != nil {
 			log.ZWarn(ctx, "create conversation failed", err, "conversation2", conversation)
 		}
-
-		c.webhookAfterCreateSingleChatConversations(ctx, &c.config.WebhooksConfig.AfterCreateSingleChatConversations, &conversation2)
 	case constant.NotificationChatType:
+		var conversation dbModel.Conversation
 		conversation.ConversationID = req.ConversationID
 		conversation.ConversationType = req.ConversationType
 		conversation.OwnerUserID = req.RecvID
 		conversation.UserID = req.SendID
-		if err := c.webhookBeforeCreateSingleChatConversations(ctx, &c.config.WebhooksConfig.BeforeCreateSingleChatConversations, &conversation); err != nil && err != servererrs.ErrCallbackContinue {
-			return nil, err
-		}
-
 		err := c.conversationDatabase.CreateConversation(ctx, []*dbModel.Conversation{&conversation})
 		if err != nil {
 			log.ZWarn(ctx, "create conversation failed", err, "conversation2", conversation)
 		}
-
-		c.webhookAfterCreateSingleChatConversations(ctx, &c.config.WebhooksConfig.AfterCreateSingleChatConversations, &conversation)
 	}
 
 	return &pbconversation.CreateSingleChatConversationsResp{}, nil
 }
 
 func (c *conversationServer) CreateGroupChatConversations(ctx context.Context, req *pbconversation.CreateGroupChatConversationsReq) (*pbconversation.CreateGroupChatConversationsResp, error) {
-	var conversation dbModel.Conversation
-
-	conversation.ConversationID = msgprocessor.GetConversationIDBySessionType(constant.ReadGroupChatType, req.GroupID)
-	conversation.GroupID = req.GroupID
-	conversation.ConversationType = constant.ReadGroupChatType
-
-	if err := c.webhookBeforeCreateGroupChatConversations(ctx, &c.config.WebhooksConfig.BeforeCreateGroupChatConversations, &conversation); err != nil {
-		return nil, err
-	}
-
-	err := c.conversationDatabase.CreateGroupChatConversation(ctx, req.GroupID, req.UserIDs, &conversation)
+	err := c.conversationDatabase.CreateGroupChatConversation(ctx, req.GroupID, req.UserIDs)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.msgClient.SetUserConversationMaxSeq(ctx, conversation.ConversationID, req.UserIDs, 0); err != nil {
+	conversationID := msgprocessor.GetConversationIDBySessionType(constant.ReadGroupChatType, req.GroupID)
+	if err := c.msgClient.SetUserConversationMaxSeq(ctx, conversationID, req.UserIDs, 0); err != nil {
 		return nil, err
 	}
-
-	c.webhookAfterCreateGroupChatConversations(ctx, &c.config.WebhooksConfig.AfterCreateGroupChatConversations, &conversation)
 	return &pbconversation.CreateGroupChatConversationsResp{}, nil
 }
 
@@ -469,9 +479,6 @@ func (c *conversationServer) SetConversationMinSeq(ctx context.Context, req *pbc
 }
 
 func (c *conversationServer) GetConversationIDs(ctx context.Context, req *pbconversation.GetConversationIDsReq) (*pbconversation.GetConversationIDsResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
-		return nil, err
-	}
 	conversationIDs, err := c.conversationDatabase.GetConversationIDs(ctx, req.UserID)
 	if err != nil {
 		return nil, err
@@ -480,9 +487,6 @@ func (c *conversationServer) GetConversationIDs(ctx context.Context, req *pbconv
 }
 
 func (c *conversationServer) GetUserConversationIDsHash(ctx context.Context, req *pbconversation.GetUserConversationIDsHashReq) (*pbconversation.GetUserConversationIDsHashResp, error) {
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
-		return nil, err
-	}
 	hash, err := c.conversationDatabase.GetUserConversationIDsHash(ctx, req.OwnerUserID)
 	if err != nil {
 		return nil, err
@@ -490,7 +494,10 @@ func (c *conversationServer) GetUserConversationIDsHash(ctx context.Context, req
 	return &pbconversation.GetUserConversationIDsHashResp{Hash: hash}, nil
 }
 
-func (c *conversationServer) GetConversationsByConversationID(ctx context.Context, req *pbconversation.GetConversationsByConversationIDReq) (*pbconversation.GetConversationsByConversationIDResp, error) {
+func (c *conversationServer) GetConversationsByConversationID(
+	ctx context.Context,
+	req *pbconversation.GetConversationsByConversationIDReq,
+) (*pbconversation.GetConversationsByConversationIDResp, error) {
 	conversations, err := c.conversationDatabase.GetConversationsByConversationID(ctx, req.ConversationIDs)
 	if err != nil {
 		return nil, err
@@ -544,7 +551,10 @@ func (c *conversationServer) conversationSort(conversations map[int64]string, re
 	resp.ConversationElems = append(resp.ConversationElems, cons...)
 }
 
-func (c *conversationServer) getConversationInfo(ctx context.Context, chatLogs map[string]*sdkws.MsgData, userID string) (map[string]*pbconversation.ConversationElem, error) {
+func (c *conversationServer) getConversationInfo(
+	ctx context.Context,
+	chatLogs map[string]*sdkws.MsgData,
+	userID string) (map[string]*pbconversation.ConversationElem, error) {
 	var (
 		sendIDs         []string
 		groupIDs        []string
@@ -630,11 +640,6 @@ func (c *conversationServer) GetConversationNotReceiveMessageUserIDs(ctx context
 }
 
 func (c *conversationServer) UpdateConversation(ctx context.Context, req *pbconversation.UpdateConversationReq) (*pbconversation.UpdateConversationResp, error) {
-	for _, userID := range req.UserIDs {
-		if err := authverify.CheckAccess(ctx, userID); err != nil {
-			return nil, err
-		}
-	}
 	m := make(map[string]any)
 	if req.RecvMsgOpt != nil {
 		m["recv_msg_opt"] = req.RecvMsgOpt.Value
@@ -681,9 +686,6 @@ func (c *conversationServer) UpdateConversation(ctx context.Context, req *pbconv
 }
 
 func (c *conversationServer) GetOwnerConversation(ctx context.Context, req *pbconversation.GetOwnerConversationReq) (*pbconversation.GetOwnerConversationResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
-		return nil, err
-	}
 	total, conversations, err := c.conversationDatabase.GetOwnerConversation(ctx, req.UserID, req.Pagination)
 	if err != nil {
 		return nil, err
@@ -745,9 +747,6 @@ func (c *conversationServer) GetConversationsNeedClearMsg(ctx context.Context, _
 }
 
 func (c *conversationServer) GetNotNotifyConversationIDs(ctx context.Context, req *pbconversation.GetNotNotifyConversationIDsReq) (*pbconversation.GetNotNotifyConversationIDsResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
-		return nil, err
-	}
 	conversationIDs, err := c.conversationDatabase.GetNotNotifyConversationIDs(ctx, req.UserID)
 	if err != nil {
 		return nil, err
@@ -756,9 +755,6 @@ func (c *conversationServer) GetNotNotifyConversationIDs(ctx context.Context, re
 }
 
 func (c *conversationServer) GetPinnedConversationIDs(ctx context.Context, req *pbconversation.GetPinnedConversationIDsReq) (*pbconversation.GetPinnedConversationIDsResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
-		return nil, err
-	}
 	conversationIDs, err := c.conversationDatabase.GetPinnedConversationIDs(ctx, req.UserID)
 	if err != nil {
 		return nil, err

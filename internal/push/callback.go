@@ -17,7 +17,6 @@ package push
 import (
 	"context"
 	"encoding/json"
-
 	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/callbackstruct"

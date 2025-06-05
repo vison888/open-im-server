@@ -18,7 +18,6 @@ import (
 	"context"
 
 	"github.com/openimsdk/open-im-server/v3/internal/rpc/auth"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/startrpc"
 	"github.com/openimsdk/open-im-server/v3/version"
 	"github.com/openimsdk/tools/system/program"
@@ -36,11 +35,10 @@ func NewAuthRpcCmd() *AuthRpcCmd {
 	var authConfig auth.Config
 	ret := &AuthRpcCmd{authConfig: &authConfig}
 	ret.configMap = map[string]any{
-		config.OpenIMRPCAuthCfgFileName: &authConfig.RpcConfig,
-		config.RedisConfigFileName:      &authConfig.RedisConfig,
-		config.MongodbConfigFileName:    &authConfig.MongoConfig,
-		config.ShareFileName:            &authConfig.Share,
-		config.DiscoveryConfigFilename:  &authConfig.Discovery,
+		OpenIMRPCAuthCfgFileName: &authConfig.RpcConfig,
+		RedisConfigFileName:      &authConfig.RedisConfig,
+		ShareFileName:            &authConfig.Share,
+		DiscoveryConfigFilename:  &authConfig.Discovery,
 	}
 	ret.RootCmd = NewRootCmd(program.GetProcessName(), WithConfigMap(ret.configMap))
 	ret.ctx = context.WithValue(context.Background(), "version", version.Version)
@@ -58,15 +56,9 @@ func (a *AuthRpcCmd) Exec() error {
 func (a *AuthRpcCmd) runE() error {
 	return startrpc.Start(a.ctx, &a.authConfig.Discovery, &a.authConfig.RpcConfig.Prometheus, a.authConfig.RpcConfig.RPC.ListenIP,
 		a.authConfig.RpcConfig.RPC.RegisterIP, a.authConfig.RpcConfig.RPC.AutoSetPorts, a.authConfig.RpcConfig.RPC.Ports,
-		a.Index(), a.authConfig.Discovery.RpcService.Auth, nil, a.authConfig,
+		a.Index(), a.authConfig.Share.RpcRegisterName.Auth, &a.authConfig.Share, a.authConfig,
 		[]string{
-			a.authConfig.RpcConfig.GetConfigFileName(),
-			a.authConfig.Share.GetConfigFileName(),
-			a.authConfig.RedisConfig.GetConfigFileName(),
-			a.authConfig.Discovery.GetConfigFileName(),
-		},
-		[]string{
-			a.authConfig.Discovery.RpcService.MessageGateway,
+			a.authConfig.Share.RpcRegisterName.MessageGateway,
 		},
 		auth.Start)
 }

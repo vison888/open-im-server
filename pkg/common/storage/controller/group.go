@@ -142,7 +142,7 @@ func NewGroupDatabase(
 		groupMemberDB:  groupMemberDB,
 		groupRequestDB: groupRequestDB,
 		ctxTx:          ctxTx,
-		cache:          redis2.NewGroupCacheRedis(rdb, localCache, groupDB, groupMemberDB, groupRequestDB, groupHash),
+		cache:          redis2.NewGroupCacheRedis(rdb, localCache, groupDB, groupMemberDB, groupRequestDB, groupHash, redis2.GetRocksCacheOptions()),
 	}
 }
 

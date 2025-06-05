@@ -24,7 +24,3 @@ var (
 		Help: "The number of online user num",
 	})
 )
-
-func RegistryMsgGateway() {
-	registry.MustRegister(OnlineUserGauge)
-}

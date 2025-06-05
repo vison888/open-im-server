@@ -2,20 +2,15 @@ package push
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/openimsdk/protocol/msggateway"
 	"github.com/openimsdk/protocol/sdkws"
 	"github.com/openimsdk/tools/discovery"
-	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/log"
 	"github.com/openimsdk/tools/utils/datautil"
-	"github.com/openimsdk/tools/utils/runtimeenv"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
-
-	conf "github.com/openimsdk/open-im-server/v3/pkg/common/config"
 )
 
 type OnlinePusher interface {
@@ -31,42 +26,42 @@ func newEmptyOnlinePusher() *emptyOnlinePusher {
 	return &emptyOnlinePusher{}
 }
 
-func (emptyOnlinePusher) GetConnsAndOnlinePush(ctx context.Context, msg *sdkws.MsgData, pushToUserIDs []string) (wsResults []*msggateway.SingleMsgToUserResults, err error) {
+func (emptyOnlinePusher) GetConnsAndOnlinePush(ctx context.Context, msg *sdkws.MsgData,
+	pushToUserIDs []string) (wsResults []*msggateway.SingleMsgToUserResults, err error) {
 	log.ZInfo(ctx, "emptyOnlinePusher GetConnsAndOnlinePush", nil)
 	return nil, nil
 }
-func (u emptyOnlinePusher) GetOnlinePushFailedUserIDs(ctx context.Context, msg *sdkws.MsgData, wsResults []*msggateway.SingleMsgToUserResults, pushToUserIDs *[]string) []string {
+func (u emptyOnlinePusher) GetOnlinePushFailedUserIDs(ctx context.Context, msg *sdkws.MsgData,
+	wsResults []*msggateway.SingleMsgToUserResults, pushToUserIDs *[]string) []string {
 	log.ZInfo(ctx, "emptyOnlinePusher GetOnlinePushFailedUserIDs", nil)
 	return nil
 }
 
-func NewOnlinePusher(disCov discovery.Conn, config *Config) (OnlinePusher, error) {
-	if conf.Standalone() {
-		return NewDefaultAllNode(disCov, config), nil
-	}
-	if runtimeenv.RuntimeEnvironment() == conf.KUBERNETES {
-		return NewDefaultAllNode(disCov, config), nil
-	}
+func NewOnlinePusher(disCov discovery.SvcDiscoveryRegistry, config *Config) OnlinePusher {
 	switch config.Discovery.Enable {
-	case conf.ETCD:
-		return NewDefaultAllNode(disCov, config), nil
+	case "k8s":
+		return NewK8sStaticConsistentHash(disCov, config)
+	case "zookeeper":
+		return NewDefaultAllNode(disCov, config)
+	case "etcd":
+		return NewDefaultAllNode(disCov, config)
 	default:
-		return nil, errs.New(fmt.Sprintf("unsupported discovery type %s", config.Discovery.Enable))
+		return newEmptyOnlinePusher()
 	}
 }
 
 type DefaultAllNode struct {
-	disCov discovery.Conn
+	disCov discovery.SvcDiscoveryRegistry
 	config *Config
 }
 
-func NewDefaultAllNode(disCov discovery.Conn, config *Config) *DefaultAllNode {
+func NewDefaultAllNode(disCov discovery.SvcDiscoveryRegistry, config *Config) *DefaultAllNode {
 	return &DefaultAllNode{disCov: disCov, config: config}
 }
 
 func (d *DefaultAllNode) GetConnsAndOnlinePush(ctx context.Context, msg *sdkws.MsgData,
 	pushToUserIDs []string) (wsResults []*msggateway.SingleMsgToUserResults, err error) {
-	conns, err := d.disCov.GetConns(ctx, d.config.Discovery.RpcService.MessageGateway)
+	conns, err := d.disCov.GetConns(ctx, d.config.Share.RpcRegisterName.MessageGateway)
 	if len(conns) == 0 {
 		log.ZWarn(ctx, "get gateway conn 0 ", nil)
 	} else {

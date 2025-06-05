@@ -3,16 +3,14 @@ package rpccache
 import (
 	"context"
 	"fmt"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
+	"github.com/openimsdk/protocol/constant"
+	"github.com/openimsdk/protocol/user"
 	"math/rand"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
-	"github.com/openimsdk/protocol/constant"
-	"github.com/openimsdk/protocol/user"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/cachekey"
 	"github.com/openimsdk/open-im-server/v3/pkg/localcache"
@@ -24,25 +22,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const (
-	Begin uint32 = iota
-	DoOnlineStatusOver
-	DoSubscribeOver
-)
-
-type OnlineCache interface {
-	GetUserOnlinePlatform(ctx context.Context, userID string) ([]int32, error)
-	GetUserOnline(ctx context.Context, userID string) (bool, error)
-	GetUsersOnline(ctx context.Context, userIDs []string) ([]string, []string, error)
-	WaitCache()
-}
-
-func NewOnlineCache(client *rpcli.UserClient, group *GroupLocalCache, rdb redis.UniversalClient, fullUserCache bool, fn func(ctx context.Context, userID string, platformIDs []int32)) (OnlineCache, error) {
-	if config.Standalone() {
-		return disableOnlineCache{client: client}, nil
-	}
+func NewOnlineCache(client *rpcli.UserClient, group *GroupLocalCache, rdb redis.UniversalClient, fullUserCache bool, fn func(ctx context.Context, userID string, platformIDs []int32)) (*OnlineCache, error) {
 	l := &sync.Mutex{}
-	x := &defaultOnlineCache{
+	x := &OnlineCache{
 		client:        client,
 		group:         group,
 		fullUserCache: fullUserCache,
@@ -69,15 +51,20 @@ func NewOnlineCache(client *rpcli.UserClient, group *GroupLocalCache, rdb redis.
 		x.CurrentPhase.Store(DoSubscribeOver)
 		x.Cond.Broadcast()
 	}
-	if rdb != nil {
-		go func() {
-			x.doSubscribe(ctx, rdb, fn)
-		}()
-	}
+
+	go func() {
+		x.doSubscribe(ctx, rdb, fn)
+	}()
 	return x, nil
 }
 
-type defaultOnlineCache struct {
+const (
+	Begin uint32 = iota
+	DoOnlineStatusOver
+	DoSubscribeOver
+)
+
+type OnlineCache struct {
 	client *rpcli.UserClient
 	group  *GroupLocalCache
 
@@ -93,7 +80,7 @@ type defaultOnlineCache struct {
 	CurrentPhase atomic.Uint32
 }
 
-func (o *defaultOnlineCache) initUsersOnlineStatus(ctx context.Context) (err error) {
+func (o *OnlineCache) initUsersOnlineStatus(ctx context.Context) (err error) {
 	log.ZDebug(ctx, "init users online status begin")
 
 	var (
@@ -146,7 +133,7 @@ func (o *defaultOnlineCache) initUsersOnlineStatus(ctx context.Context) (err err
 	return nil
 }
 
-func (o *defaultOnlineCache) doSubscribe(ctx context.Context, rdb redis.UniversalClient, fn func(ctx context.Context, userID string, platformIDs []int32)) {
+func (o *OnlineCache) doSubscribe(ctx context.Context, rdb redis.UniversalClient, fn func(ctx context.Context, userID string, platformIDs []int32)) {
 	o.Lock.Lock()
 	ch := rdb.Subscribe(ctx, cachekey.OnlineChannel).Channel()
 	for o.CurrentPhase.Load() < DoOnlineStatusOver {
@@ -197,7 +184,7 @@ func (o *defaultOnlineCache) doSubscribe(ctx context.Context, rdb redis.Universa
 	}
 }
 
-func (o *defaultOnlineCache) getUserOnlinePlatform(ctx context.Context, userID string) ([]int32, error) {
+func (o *OnlineCache) getUserOnlinePlatform(ctx context.Context, userID string) ([]int32, error) {
 	platformIDs, err := o.lruCache.Get(userID, func() ([]int32, error) {
 		return o.client.GetUserOnlinePlatform(ctx, userID)
 	})
@@ -209,7 +196,7 @@ func (o *defaultOnlineCache) getUserOnlinePlatform(ctx context.Context, userID s
 	return platformIDs, nil
 }
 
-func (o *defaultOnlineCache) GetUserOnlinePlatform(ctx context.Context, userID string) ([]int32, error) {
+func (o *OnlineCache) GetUserOnlinePlatform(ctx context.Context, userID string) ([]int32, error) {
 	platformIDs, err := o.getUserOnlinePlatform(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -219,7 +206,7 @@ func (o *defaultOnlineCache) GetUserOnlinePlatform(ctx context.Context, userID s
 	return platformIDs, nil
 }
 
-func (o *defaultOnlineCache) GetUserOnline(ctx context.Context, userID string) (bool, error) {
+func (o *OnlineCache) GetUserOnline(ctx context.Context, userID string) (bool, error) {
 	platformIDs, err := o.getUserOnlinePlatform(ctx, userID)
 	if err != nil {
 		return false, err
@@ -227,7 +214,7 @@ func (o *defaultOnlineCache) GetUserOnline(ctx context.Context, userID string) (
 	return len(platformIDs) > 0, nil
 }
 
-func (o *defaultOnlineCache) getUserOnlinePlatformBatch(ctx context.Context, userIDs []string) (map[string][]int32, error) {
+func (o *OnlineCache) getUserOnlinePlatformBatch(ctx context.Context, userIDs []string) (map[string][]int32, error) {
 	if len(userIDs) == 0 {
 		return nil, nil
 	}
@@ -251,7 +238,7 @@ func (o *defaultOnlineCache) getUserOnlinePlatformBatch(ctx context.Context, use
 	return platformIDsMap, nil
 }
 
-func (o *defaultOnlineCache) GetUsersOnline(ctx context.Context, userIDs []string) ([]string, []string, error) {
+func (o *OnlineCache) GetUsersOnline(ctx context.Context, userIDs []string) ([]string, []string, error) {
 	t := time.Now()
 
 	var (
@@ -287,7 +274,7 @@ func (o *defaultOnlineCache) GetUsersOnline(ctx context.Context, userIDs []strin
 	return onlineUserIDs, offlineUserIDs, nil
 }
 
-func (o *defaultOnlineCache) setUserOnline(userID string, platformIDs []int32) {
+func (o *OnlineCache) setUserOnline(userID string, platformIDs []int32) {
 	switch o.fullUserCache {
 	case true:
 		o.mapCache.Store(userID, platformIDs)
@@ -296,51 +283,6 @@ func (o *defaultOnlineCache) setUserOnline(userID string, platformIDs []int32) {
 	}
 }
 
-func (o *defaultOnlineCache) setHasUserOnline(userID string, platformIDs []int32) bool {
+func (o *OnlineCache) setHasUserOnline(userID string, platformIDs []int32) bool {
 	return o.lruCache.SetHas(userID, platformIDs)
 }
-
-func (o *defaultOnlineCache) WaitCache() {
-	o.Lock.Lock()
-	for o.CurrentPhase.Load() < DoSubscribeOver {
-		o.Cond.Wait()
-	}
-	o.Lock.Unlock()
-}
-
-type disableOnlineCache struct {
-	client *rpcli.UserClient
-}
-
-func (o disableOnlineCache) GetUserOnlinePlatform(ctx context.Context, userID string) ([]int32, error) {
-	return o.client.GetUserOnlinePlatform(ctx, userID)
-}
-
-func (o disableOnlineCache) GetUserOnline(ctx context.Context, userID string) (bool, error) {
-	onlinePlatform, err := o.client.GetUserOnlinePlatform(ctx, userID)
-	if err != nil {
-		return false, err
-	}
-	return len(onlinePlatform) > 0, err
-}
-
-func (o disableOnlineCache) GetUsersOnline(ctx context.Context, userIDs []string) ([]string, []string, error) {
-	var (
-		onlineUserIDs  = make([]string, 0, len(userIDs))
-		offlineUserIDs = make([]string, 0, len(userIDs))
-	)
-	for _, userID := range userIDs {
-		online, err := o.GetUserOnline(ctx, userID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if online {
-			onlineUserIDs = append(onlineUserIDs, userID)
-		} else {
-			offlineUserIDs = append(offlineUserIDs, userID)
-		}
-	}
-	return onlineUserIDs, offlineUserIDs, nil
-}
-
-func (o disableOnlineCache) WaitCache() {}

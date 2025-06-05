@@ -17,25 +17,27 @@ package relation
 import (
 	"context"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/dbbuild"
 	"github.com/openimsdk/open-im-server/v3/pkg/notification/common_user"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 
 	"github.com/openimsdk/tools/mq/memamq"
 
-	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache/redis"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database/mgo"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/webhook"
 	"github.com/openimsdk/open-im-server/v3/pkg/localcache"
+	"github.com/openimsdk/tools/db/redisutil"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
+	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/relation"
 	"github.com/openimsdk/protocol/sdkws"
+	"github.com/openimsdk/tools/db/mongoutil"
 	"github.com/openimsdk/tools/discovery"
 	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/utils/datautil"
@@ -47,7 +49,7 @@ type friendServer struct {
 	db                 controller.FriendDatabase
 	blackDatabase      controller.BlackDatabase
 	notificationSender *FriendNotificationSender
-	RegisterCenter     discovery.Conn
+	RegisterCenter     discovery.SvcDiscoveryRegistry
 	config             *Config
 	webhookClient      *webhook.Client
 	queue              *memamq.MemoryQueue
@@ -66,13 +68,12 @@ type Config struct {
 	Discovery          config.Discovery
 }
 
-func Start(ctx context.Context, config *Config, client discovery.Conn, server grpc.ServiceRegistrar) error {
-	dbb := dbbuild.NewBuilder(&config.MongodbConfig, &config.RedisConfig)
-	mgocli, err := dbb.Mongo(ctx)
+func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryRegistry, server *grpc.Server) error {
+	mgocli, err := mongoutil.NewMongoDB(ctx, config.MongodbConfig.Build())
 	if err != nil {
 		return err
 	}
-	rdb, err := dbb.Redis(ctx)
+	rdb, err := redisutil.NewRedisClient(ctx, config.RedisConfig.Build())
 	if err != nil {
 		return err
 	}
@@ -92,36 +93,35 @@ func Start(ctx context.Context, config *Config, client discovery.Conn, server gr
 		return err
 	}
 
-	userConn, err := client.GetConn(ctx, config.Discovery.RpcService.User)
+	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return err
 	}
-	msgConn, err := client.GetConn(ctx, config.Discovery.RpcService.Msg)
+	msgConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Msg)
 	if err != nil {
 		return err
 	}
 	userClient := rpcli.NewUserClient(userConn)
-	database := controller.NewFriendDatabase(
-		friendMongoDB,
-		friendRequestMongoDB,
-		redis.NewFriendCacheRedis(rdb, &config.LocalCacheConfig, friendMongoDB),
-		mgocli.GetTx(),
-	)
+
 	// Initialize notification sender
 	notificationSender := NewFriendNotificationSender(
 		&config.NotificationConfig,
 		rpcli.NewMsgClient(msgConn),
 		WithRpcFunc(userClient.GetUsersInfo),
-		WithFriendDB(database),
 	)
 	localcache.InitLocalCache(&config.LocalCacheConfig)
 
 	// Register Friend server with refactored MongoDB and Redis integrations
 	relation.RegisterFriendServer(server, &friendServer{
-		db: database,
+		db: controller.NewFriendDatabase(
+			friendMongoDB,
+			friendRequestMongoDB,
+			redis.NewFriendCacheRedis(rdb, &config.LocalCacheConfig, friendMongoDB, redis.GetRocksCacheOptions()),
+			mgocli.GetTx(),
+		),
 		blackDatabase: controller.NewBlackDatabase(
 			blackMongoDB,
-			redis.NewBlackCacheRedis(rdb, &config.LocalCacheConfig, blackMongoDB),
+			redis.NewBlackCacheRedis(rdb, &config.LocalCacheConfig, blackMongoDB, redis.GetRocksCacheOptions()),
 		),
 		notificationSender: notificationSender,
 		RegisterCenter:     client,
@@ -136,7 +136,7 @@ func Start(ctx context.Context, config *Config, client discovery.Conn, server gr
 // ok.
 func (s *friendServer) ApplyToAddFriend(ctx context.Context, req *relation.ApplyToAddFriendReq) (resp *relation.ApplyToAddFriendResp, err error) {
 	resp = &relation.ApplyToAddFriendResp{}
-	if err := authverify.CheckAccess(ctx, req.FromUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.FromUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 	if req.ToUserID == req.FromUserID {
@@ -166,7 +166,7 @@ func (s *friendServer) ApplyToAddFriend(ctx context.Context, req *relation.Apply
 
 // ok.
 func (s *friendServer) ImportFriends(ctx context.Context, req *relation.ImportFriendReq) (resp *relation.ImportFriendResp, err error) {
-	if err := authverify.CheckAdmin(ctx); err != nil {
+	if err := authverify.CheckAdmin(ctx, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -202,7 +202,7 @@ func (s *friendServer) ImportFriends(ctx context.Context, req *relation.ImportFr
 // ok.
 func (s *friendServer) RespondFriendApply(ctx context.Context, req *relation.RespondFriendApplyReq) (resp *relation.RespondFriendApplyResp, err error) {
 	resp = &relation.RespondFriendApplyResp{}
-	if err := authverify.CheckAccess(ctx, req.ToUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.ToUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -237,7 +237,7 @@ func (s *friendServer) RespondFriendApply(ctx context.Context, req *relation.Res
 
 // ok.
 func (s *friendServer) DeleteFriend(ctx context.Context, req *relation.DeleteFriendReq) (resp *relation.DeleteFriendResp, err error) {
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -262,7 +262,7 @@ func (s *friendServer) SetFriendRemark(ctx context.Context, req *relation.SetFri
 		return nil, err
 	}
 
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -282,7 +282,7 @@ func (s *friendServer) SetFriendRemark(ctx context.Context, req *relation.SetFri
 }
 
 func (s *friendServer) GetFriendInfo(ctx context.Context, req *relation.GetFriendInfoReq) (*relation.GetFriendInfoResp, error) {
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 	friends, err := s.db.FindFriendsWithError(ctx, req.OwnerUserID, req.FriendUserIDs)
@@ -293,12 +293,12 @@ func (s *friendServer) GetFriendInfo(ctx context.Context, req *relation.GetFrien
 }
 
 func (s *friendServer) GetDesignatedFriends(ctx context.Context, req *relation.GetDesignatedFriendsReq) (resp *relation.GetDesignatedFriendsResp, err error) {
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
-		return nil, err
-	}
 	resp = &relation.GetDesignatedFriendsResp{}
 	if datautil.Duplicate(req.FriendUserIDs) {
 		return nil, errs.ErrArgs.WrapMsg("friend userID repeated")
+	}
+	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
+		return nil, err
 	}
 	friends, err := s.getFriend(ctx, req.OwnerUserID, req.FriendUserIDs)
 	if err != nil {
@@ -321,10 +321,9 @@ func (s *friendServer) getFriend(ctx context.Context, ownerUserID string, friend
 }
 
 // Get the list of friend requests sent out proactively.
-func (s *friendServer) GetDesignatedFriendsApply(ctx context.Context, req *relation.GetDesignatedFriendsApplyReq) (resp *relation.GetDesignatedFriendsApplyResp, err error) {
-	if err := authverify.CheckAccessIn(ctx, req.FromUserID, req.ToUserID); err != nil {
-		return nil, err
-	}
+func (s *friendServer) GetDesignatedFriendsApply(ctx context.Context,
+	req *relation.GetDesignatedFriendsApplyReq,
+) (resp *relation.GetDesignatedFriendsApplyResp, err error) {
 	friendRequests, err := s.db.FindBothFriendRequests(ctx, req.FromUserID, req.ToUserID)
 	if err != nil {
 		return nil, err
@@ -339,7 +338,7 @@ func (s *friendServer) GetDesignatedFriendsApply(ctx context.Context, req *relat
 
 // Get received friend requests (i.e., those initiated by others).
 func (s *friendServer) GetPaginationFriendsApplyTo(ctx context.Context, req *relation.GetPaginationFriendsApplyToReq) (resp *relation.GetPaginationFriendsApplyToResp, err error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -363,7 +362,9 @@ func (s *friendServer) GetPaginationFriendsApplyTo(ctx context.Context, req *rel
 }
 
 func (s *friendServer) GetPaginationFriendsApplyFrom(ctx context.Context, req *relation.GetPaginationFriendsApplyFromReq) (resp *relation.GetPaginationFriendsApplyFromResp, err error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	resp = &relation.GetPaginationFriendsApplyFromResp{}
+
+	if err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -375,7 +376,6 @@ func (s *friendServer) GetPaginationFriendsApplyFrom(ctx context.Context, req *r
 		return nil, err
 	}
 
-	resp = &relation.GetPaginationFriendsApplyFromResp{}
 	resp.FriendRequests, err = convert.FriendRequestDB2Pb(ctx, friendRequests, s.getCommonUserMap)
 	if err != nil {
 		return nil, err
@@ -388,9 +388,6 @@ func (s *friendServer) GetPaginationFriendsApplyFrom(ctx context.Context, req *r
 
 // ok.
 func (s *friendServer) IsFriend(ctx context.Context, req *relation.IsFriendReq) (resp *relation.IsFriendResp, err error) {
-	if err := authverify.CheckAccessIn(ctx, req.UserID1, req.UserID2); err != nil {
-		return nil, err
-	}
 	resp = &relation.IsFriendResp{}
 	resp.InUser1Friends, resp.InUser2Friends, err = s.db.CheckIn(ctx, req.UserID1, req.UserID2)
 	if err != nil {
@@ -400,7 +397,7 @@ func (s *friendServer) IsFriend(ctx context.Context, req *relation.IsFriendReq) 
 }
 
 func (s *friendServer) GetPaginationFriends(ctx context.Context, req *relation.GetPaginationFriendsReq) (resp *relation.GetPaginationFriendsResp, err error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -421,7 +418,7 @@ func (s *friendServer) GetPaginationFriends(ctx context.Context, req *relation.G
 }
 
 func (s *friendServer) GetFriendIDs(ctx context.Context, req *relation.GetFriendIDsReq) (resp *relation.GetFriendIDsResp, err error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -443,9 +440,10 @@ func (s *friendServer) GetSpecifiedFriendsInfo(ctx context.Context, req *relatio
 		return nil, errs.ErrArgs.WrapMsg("userIDList repeated")
 	}
 
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
+
 	userMap, err := s.userClient.GetUsersInfoMap(ctx, req.UserIDList)
 	if err != nil {
 		return nil, err
@@ -514,7 +512,10 @@ func (s *friendServer) GetSpecifiedFriendsInfo(ctx context.Context, req *relatio
 	return resp, nil
 }
 
-func (s *friendServer) UpdateFriends(ctx context.Context, req *relation.UpdateFriendsReq) (*relation.UpdateFriendsResp, error) {
+func (s *friendServer) UpdateFriends(
+	ctx context.Context,
+	req *relation.UpdateFriendsReq,
+) (*relation.UpdateFriendsResp, error) {
 	if len(req.FriendUserIDs) == 0 {
 		return nil, errs.ErrArgs.WrapMsg("friendIDList is empty")
 	}
@@ -522,7 +523,7 @@ func (s *friendServer) UpdateFriends(ctx context.Context, req *relation.UpdateFr
 		return nil, errs.ErrArgs.WrapMsg("friendIDList repeated")
 	}
 
-	if err := authverify.CheckAccess(ctx, req.OwnerUserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
@@ -553,7 +554,7 @@ func (s *friendServer) UpdateFriends(ctx context.Context, req *relation.UpdateFr
 }
 
 func (s *friendServer) GetSelfUnhandledApplyCount(ctx context.Context, req *relation.GetSelfUnhandledApplyCountReq) (*relation.GetSelfUnhandledApplyCountResp, error) {
-	if err := authverify.CheckAccess(ctx, req.UserID); err != nil {
+	if err := authverify.CheckAccessV3(ctx, req.UserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
