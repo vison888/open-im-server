@@ -12,13 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// message_handler.go - 消息处理器模块
+//
+// 功能概述:
+// 1. 处理WebSocket客户端发送的消息请求
+// 2. 将WebSocket消息转换为相应的RPC调用
+// 3. 管理请求-响应的对象池优化性能
+// 4. 提供统一的消息路由和错误处理机制
+// 5. 支持异步消息处理和响应管理
+//
+// 设计思路:
+// - 对象池优化: 使用sync.Pool复用Req对象，减少GC压力
+// - 统一路由: 所有WebSocket消息通过统一入口处理
+// - 错误处理: 统一的错误响应格式和异常处理
+// - 性能优化: 异步处理和内存复用提升吞吐量
+// - 解耦设计: 消息处理与具体业务逻辑分离
+//
+// 核心职责:
+// - 消息解析: 解析WebSocket原始消息
+// - 路由分发: 根据操作ID路由到对应的RPC服务
+// - 响应处理: 统一格式化和发送响应消息
+// - 性能优化: 对象池管理和异步处理
+
 package msggateway
 
 import (
 	"context"
 	"encoding/json"
-	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 	"sync"
+
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 
 	"github.com/go-playground/validator/v10"
 	"google.golang.org/protobuf/proto"

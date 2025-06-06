@@ -44,41 +44,62 @@ import (
 	"google.golang.org/grpc"
 )
 
+// conversationServer 会话服务器结构体
+// 负责处理所有与会话相关的RPC请求，包括会话的创建、查询、更新、排序等核心功能
 type conversationServer struct {
 	pbconversation.UnimplementedConversationServer
+
+	// conversationDatabase 会话数据库控制器
+	// 封装了会话数据的CRUD操作，支持MongoDB和Redis的混合存储
 	conversationDatabase controller.ConversationDatabase
 
+	// conversationNotificationSender 会话通知发送器
+	// 负责发送会话变更相关的通知消息，如会话设置变更、未读数变更等
 	conversationNotificationSender *ConversationNotificationSender
-	config                         *Config
 
-	userClient  *rpcli.UserClient
-	msgClient   *rpcli.MsgClient
-	groupClient *rpcli.GroupClient
+	// config 服务配置信息
+	config *Config
+
+	// 依赖的其他RPC服务客户端
+	userClient  *rpcli.UserClient  // 用户服务客户端，用于获取用户信息
+	msgClient   *rpcli.MsgClient   // 消息服务客户端，用于获取消息相关信息
+	groupClient *rpcli.GroupClient // 群组服务客户端，用于获取群组信息
 }
 
+// Config 会话服务配置结构体
+// 包含了会话服务运行所需的所有配置信息
 type Config struct {
-	RpcConfig          config.Conversation
-	RedisConfig        config.Redis
-	MongodbConfig      config.Mongo
-	NotificationConfig config.Notification
-	Share              config.Share
-	LocalCacheConfig   config.LocalCache
-	Discovery          config.Discovery
+	RpcConfig          config.Conversation // RPC服务配置
+	RedisConfig        config.Redis        // Redis缓存配置
+	MongodbConfig      config.Mongo        // MongoDB数据库配置
+	NotificationConfig config.Notification // 通知服务配置
+	Share              config.Share        // 共享配置信息
+	LocalCacheConfig   config.LocalCache   // 本地缓存配置
+	Discovery          config.Discovery    // 服务发现配置
 }
 
+// Start 启动会话服务
+// 初始化所有依赖组件并注册gRPC服务
 func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryRegistry, server *grpc.Server) error {
+	// 初始化MongoDB连接
 	mgocli, err := mongoutil.NewMongoDB(ctx, config.MongodbConfig.Build())
 	if err != nil {
 		return err
 	}
+
+	// 初始化Redis连接
 	rdb, err := redisutil.NewRedisClient(ctx, config.RedisConfig.Build())
 	if err != nil {
 		return err
 	}
+
+	// 创建会话数据库DAO
 	conversationDB, err := mgo.NewConversationMongo(mgocli.GetDB())
 	if err != nil {
 		return err
 	}
+
+	// 获取其他服务的连接
 	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return err
@@ -91,8 +112,13 @@ func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryReg
 	if err != nil {
 		return err
 	}
+
 	msgClient := rpcli.NewMsgClient(msgConn)
+
+	// 初始化本地缓存
 	localcache.InitLocalCache(&config.LocalCacheConfig)
+
+	// 注册会话服务
 	pbconversation.RegisterConversationServer(server, &conversationServer{
 		conversationNotificationSender: NewConversationNotificationSender(&config.NotificationConfig, msgClient),
 		conversationDatabase: controller.NewConversationDatabase(conversationDB,
@@ -104,22 +130,38 @@ func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryReg
 	return nil
 }
 
+// GetConversation 获取单个会话信息
+// 根据用户ID和会话ID查询会话详细信息
 func (c *conversationServer) GetConversation(ctx context.Context, req *pbconversation.GetConversationReq) (*pbconversation.GetConversationResp, error) {
+	// 从数据库查询会话信息
 	conversations, err := c.conversationDatabase.FindConversations(ctx, req.OwnerUserID, []string{req.ConversationID})
 	if err != nil {
 		return nil, err
 	}
+
+	// 检查会话是否存在
 	if len(conversations) < 1 {
 		return nil, errs.ErrRecordNotFound.WrapMsg("conversation not found")
 	}
+
+	// 构造响应
 	resp := &pbconversation.GetConversationResp{Conversation: &pbconversation.Conversation{}}
 	resp.Conversation = convert.ConversationDB2Pb(conversations[0])
 	return resp, nil
 }
 
+// GetSortedConversationList 获取排序后的会话列表
+// 这是会话模块的核心方法，负责：
+// 1. 查询用户的所有会话
+// 2. 获取每个会话的最新消息和未读数
+// 3. 按置顶状态和最新消息时间排序
+// 4. 分页返回结果
 func (c *conversationServer) GetSortedConversationList(ctx context.Context, req *pbconversation.GetSortedConversationListReq) (resp *pbconversation.GetSortedConversationListResp, err error) {
 	log.ZDebug(ctx, "GetSortedConversationList", "seqs", req, "userID", req.UserID)
+
 	var conversationIDs []string
+
+	// 获取会话ID列表：如果请求中没有指定，则获取用户的所有会话ID
 	if len(req.ConversationIDs) == 0 {
 		conversationIDs, err = c.conversationDatabase.GetConversationIDs(ctx, req.UserID)
 		if err != nil {
@@ -129,6 +171,7 @@ func (c *conversationServer) GetSortedConversationList(ctx context.Context, req 
 		conversationIDs = req.ConversationIDs
 	}
 
+	// 批量查询会话详细信息
 	conversations, err := c.conversationDatabase.FindConversations(ctx, req.UserID, conversationIDs)
 	if err != nil {
 		return nil, err
@@ -136,26 +179,32 @@ func (c *conversationServer) GetSortedConversationList(ctx context.Context, req 
 	if len(conversations) == 0 {
 		return nil, errs.ErrRecordNotFound.Wrap()
 	}
+
+	// 获取每个会话的最大序列号（用于计算未读数）
 	maxSeqs, err := c.msgClient.GetMaxSeqs(ctx, conversationIDs)
 	if err != nil {
 		return nil, err
 	}
 
+	// 获取每个会话的最新消息
 	chatLogs, err := c.msgClient.GetMsgByConversationIDs(ctx, conversationIDs, maxSeqs)
 	if err != nil {
 		return nil, err
 	}
 
+	// 获取会话信息（包括最新消息的详细信息）
 	conversationMsg, err := c.getConversationInfo(ctx, chatLogs, req.UserID)
 	if err != nil {
 		return nil, err
 	}
 
+	// 获取用户在每个会话中的已读序列号
 	hasReadSeqs, err := c.msgClient.GetHasReadSeqs(ctx, conversationIDs, req.UserID)
 	if err != nil {
 		return nil, err
 	}
 
+	// 计算未读数：未读数 = 最大序列号 - 已读序列号
 	var unreadTotal int64
 	conversation_unreadCount := make(map[string]int64)
 	for conversationID, maxSeq := range maxSeqs {
@@ -164,37 +213,52 @@ func (c *conversationServer) GetSortedConversationList(ctx context.Context, req 
 		unreadTotal += unreadCount
 	}
 
-	conversation_isPinTime := make(map[int64]string)
-	conversation_notPinTime := make(map[int64]string)
+	// 分类会话：置顶会话和非置顶会话
+	conversation_isPinTime := make(map[int64]string)  // 置顶会话：时间戳->会话ID
+	conversation_notPinTime := make(map[int64]string) // 非置顶会话：时间戳->会话ID
+
 	for _, v := range conversations {
 		conversationID := v.ConversationID
+		// 使用最新消息的接收时间作为排序依据
 		time := conversationMsg[conversationID].MsgInfo.LatestMsgRecvTime
 		conversationMsg[conversationID].RecvMsgOpt = v.RecvMsgOpt
+
 		if v.IsPinned {
+			// 置顶会话
 			conversationMsg[conversationID].IsPinned = v.IsPinned
 			conversation_isPinTime[time] = conversationID
 			continue
 		}
+		// 非置顶会话
 		conversation_notPinTime[time] = conversationID
 	}
+
+	// 初始化响应结构
 	resp = &pbconversation.GetSortedConversationListResp{
 		ConversationTotal: int64(len(chatLogs)),
 		ConversationElems: []*pbconversation.ConversationElem{},
 		UnreadTotal:       unreadTotal,
 	}
 
+	// 先排序置顶会话，再排序非置顶会话（置顶会话优先显示）
 	c.conversationSort(conversation_isPinTime, resp, conversation_unreadCount, conversationMsg)
 	c.conversationSort(conversation_notPinTime, resp, conversation_unreadCount, conversationMsg)
 
+	// 分页处理
 	resp.ConversationElems = datautil.Paginate(resp.ConversationElems, int(req.Pagination.GetPageNumber()), int(req.Pagination.GetShowNumber()))
 	return resp, nil
 }
 
+// GetAllConversations 获取用户的所有会话
+// 返回用户的完整会话列表，不包含消息内容和排序
 func (c *conversationServer) GetAllConversations(ctx context.Context, req *pbconversation.GetAllConversationsReq) (*pbconversation.GetAllConversationsResp, error) {
+	// 查询用户的所有会话
 	conversations, err := c.conversationDatabase.GetUserAllConversation(ctx, req.OwnerUserID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 构造响应
 	resp := &pbconversation.GetAllConversationsResp{Conversations: []*pbconversation.Conversation{}}
 	resp.Conversations = convert.ConversationsDB2Pb(conversations)
 	return resp, nil
