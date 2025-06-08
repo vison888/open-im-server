@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIM系统架构和数据流综合图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #30e8bf 0%, #ff8235 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #30e8bf 0%, #ff8235 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .diagram-container {
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 600px;
+            overflow: auto;
+            background: #ffffff;
+        }
+
+        .mermaid-container {
+            transform-origin: center center;
+            transition: transform 0.3s ease;
+            max-width: 100%;
+            overflow: visible;
+        }
+
+        .description {
+            padding: 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .description h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+
+        .description ul {
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .description li {
+            margin-bottom: 8px;
+        }
+
+        .highlight {
+            background: linear-gradient(120deg, #a8edea 0%, #fed6e3 100%);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+
+        .layer-desc {
+            background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+            padding: 20px;
+            border-radius: 10px;
+            margin: 15px 0;
+            border-left: 4px solid #667eea;
+        }
+
+        .layer-desc h4 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+
+        .tech-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .tech-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .tech-card h4 {
+            margin-top: 0;
+            color: #fff;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .zoom-controls {
+                justify-content: center;
+            }
+
+            .tech-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>OpenIM系统架构和数据流综合图</h1>
+            <p>展示完整的微服务架构、存储层、中间件以及数据流转过程</p>
+        </div>
+
+        <div class="controls">
+            <div class="zoom-controls">
+                <button class="btn zoom-btn" onclick="zoomOut()">-</button>
+                <span id="zoomLevel">100%</span>
+                <button class="btn zoom-btn" onclick="zoomIn()">+</button>
+            </div>
+            <button class="btn" onclick="resetZoom()">重置缩放</button>
+            <button class="btn" onclick="exportPNG()">导出PNG</button>
+            <button class="btn" onclick="exportSVG()">导出SVG</button>
+            <button class="btn" onclick="toggleFullscreen()">全屏查看</button>
+        </div>
+
+        <div class="diagram-container" id="diagramContainer">
+            <div class="mermaid-container" id="mermaidContainer">
+                <div class="mermaid" id="diagram">
+                    graph TB
+                    subgraph "客户端层"
+                    A[Android客户端]
+                    B[iOS客户端]
+                    C[Web客户端]
+                    A --> D[WebSocket连接]
+                    B --> D
+                    C --> D
+                    end
+
+                    subgraph "网关层 - Gateway"
+                    D --> E[消息网关<br />ws_server.go]
+                    E --> F[连接管理<br />连接池 + 心跳检测]
+                    E --> G[身份验证<br />Token验证]
+                    E --> H[消息路由<br />请求分发]
+                    end
+
+                    subgraph "业务服务层 - Business Services"
+                    H --> I[msg服务<br />send.go]
+                    I --> J[消息验证<br />好友关系/黑名单]
+                    I --> K[消息处理<br />生成ServerMsgID]
+                    I --> L[权限检查<br />接收方设置]
+
+                    M[auth服务<br />用户认证]
+                    N[user服务<br />用户管理]
+                    O[friend服务<br />好友关系]
+                    P[group服务<br />群组管理]
+                    Q[push服务<br />推送处理]
+                    end
+
+                    subgraph "消息队列层 - Message Queue"
+                    K --> R[Kafka Cluster]
+                    R --> S[ToRedisTopic<br />消息分发主题]
+                    R --> T[toPushTopic<br />推送队列]
+                    R --> U[MsgToMongoMQ<br />持久化队列]
+                    end
+
+                    subgraph "消息处理层 - Message Processing"
+                    S --> V[MsgTransfer服务<br />online_history_msg_handler.go]
+                    V --> W[批量消息消费<br />parseConsumerMessages]
+                    V --> X[消息分类处理<br />categorizeMessageLists]
+                    V --> Y[Redis序号分配<br />seqConversation.Malloc]
+                    Y --> Z[INCRBY原子操作<br />唯一序号生成]
+                    end
+
+                    subgraph "缓存层 - Cache Layer"
+                    Z --> AA[Redis Cluster]
+                    AA --> AB[消息缓存<br />msg:conversationID:seq]
+                    AA --> AC[序号管理<br />seq:conversationID]
+                    AA --> AD[用户在线状态<br />user:online:status]
+                    AA --> AE[会话序号<br />conversation:seq]
+                    AB --> AF[24小时TTL<br />自动过期清理]
+                    end
+
+                    subgraph "推送处理层 - Push Processing"
+                    T --> AG[Push服务<br />push_handler.go]
+                    AG --> AH[在线状态查询<br />onlineCache.GetUsersOnline]
+                    AH --> AI{用户在线?}
+                    AI -->|在线| AJ[WebSocket推送<br />onlinePusher.GetConnsAndOnlinePush]
+                    AI -->|离线| AK[离线推送<br />offlinePushMsg]
+                    AJ --> AL[实时消息推送<br />WSPushMsg: 2001]
+                    AK --> AM[APNs/FCM推送<br />第三方推送服务]
+                    end
+
+                    subgraph "持久化层 - Persistence Layer"
+                    U --> AN[消息持久化服务<br />online_msg_to_mongo_handler.go]
+                    AN --> AO[批量写入处理<br />BatchInsertChat2DB]
+                    AO --> AP[MongoDB Cluster]
+                    AP --> AQ[消息集合<br />chat_records]
+                    AP --> AR[用户集合<br />users]
+                    AP --> AS[会话集合<br />conversations]
+                    AP --> AT[索引优化<br />查询性能提升]
+                    end
+
+                    subgraph "监控和运维层 - Operations"
+                    AU[Prometheus监控]
+                    AV[Grafana仪表板]
+                    AW[日志聚合ELK]
+                    AX[分布式追踪Jaeger]
+                    AU --> AV
+                    AW --> AX
+                    end
+
+                    %% 数据流标识
+                    D -.->|1. WebSocket连接| E
+                    I -.->|2. 消息验证处理| K
+                    K -.->|3. Kafka分发| S
+                    V -.->|4. 消息消费处理| Y
+                    Z -.->|5. Redis缓存写入| AB
+                    AG -.->|6. 推送处理| AI
+                    AN -.->|7. MongoDB持久化| AP
+
+                    %% 样式设置
+                    style E fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+                    style I fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+                    style V fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+                    style Z fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
+                    style AG fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+                    style AN fill:#e0f2f1,stroke:#00695c,stroke-width:2px
+                </div>
+            </div>
+        </div>
+
+        <div class="description">
+            <h3>系统架构核心组件</h3>
+
+            <div class="tech-grid">
+                <div class="tech-card">
+                    <h4>🌐 客户端层</h4>
+                    <p><strong>支持平台：</strong>Android、iOS、Web、PC</p>
+                    <p><strong>通信协议：</strong>WebSocket长连接</p>
+                    <p><strong>特性：</strong>断线重连、消息缓存、状态同步</p>
+                </div>
+
+                <div class="tech-card">
+                    <h4>🚪 网关层</h4>
+                    <p><strong>核心功能：</strong>连接管理、负载均衡、身份验证</p>
+                    <p><strong>技术栈：</strong>Go、WebSocket、JWT认证</p>
+                    <p><strong>性能：</strong>支持百万级并发连接</p>
+                </div>
+
+                <div class="tech-card">
+                    <h4>⚙️ 业务服务层</h4>
+                    <p><strong>微服务：</strong>msg、user、friend、group、push</p>
+                    <p><strong>架构：</strong>无状态设计、水平扩展</p>
+                    <p><strong>通信：</strong>gRPC内部通信</p>
+                </div>
+
+                <div class="tech-card">
+                    <h4>📨 消息队列</h4>
+                    <p><strong>中间件：</strong>Apache Kafka</p>
+                    <p><strong>主题：</strong>消息分发、推送、持久化</p>
+                    <p><strong>特性：</strong>高吞吐量、消息顺序保证</p>
+                </div>
+
+                <div class="tech-card">
+                    <h4>🚀 缓存层</h4>
+                    <p><strong>技术：</strong>Redis Cluster集群</p>
+                    <p><strong>功能：</strong>消息缓存、序号管理、在线状态</p>
+                    <p><strong>性能：</strong>亚毫秒级访问延迟</p>
+                </div>
+
+                <div class="tech-card">
+                    <h4>💾 持久化层</h4>
+                    <p><strong>数据库：</strong>MongoDB分片集群</p>
+                    <p><strong>存储：</strong>消息记录、用户数据、会话信息</p>
+                    <p><strong>优化：</strong>索引优化、分片策略</p>
+                </div>
+            </div>
+
+            <div class="layer-desc">
+                <h4>数据流转过程（7个关键步骤）</h4>
+                <ol>
+                    <li><strong>WebSocket连接：</strong>客户端通过网关建立长连接</li>
+                    <li><strong>消息验证处理：</strong>msg服务验证权限和关系</li>
+                    <li><strong>Kafka分发：</strong>消息进入消息队列系统</li>
+                    <li><strong>消息消费处理：</strong>MsgTransfer服务消费处理</li>
+                    <li><strong>Redis缓存写入：</strong>分配序号并缓存消息</li>
+                    <li><strong>推送处理：</strong>根据在线状态推送消息</li>
+                    <li><strong>MongoDB持久化：</strong>消息永久存储</li>
+                </ol>
+            </div>
+
+            <div class="layer-desc">
+                <h4>系统设计亮点</h4>
+                <ul>
+                    <li><strong>微服务架构：</strong>服务解耦，独立部署和扩展</li>
+                    <li><strong>异步处理：</strong>Kafka异步消息处理，提高响应速度</li>
+                    <li><strong>分层缓存：</strong>Redis多级缓存，优化读取性能</li>
+                    <li><strong>水平扩展：</strong>所有组件支持集群部署</li>
+                    <li><strong>故障隔离：</strong>服务间故障不会相互影响</li>
+                    <li><strong>可观测性：</strong>完整的监控、日志、追踪体系</li>
+                </ul>
+            </div>
+
+            <h3>技术栈总览</h3>
+            <ul>
+                <li><span class="highlight">后端语言</span>：Go (Golang)</li>
+                <li><span class="highlight">通信协议</span>：WebSocket、gRPC、HTTP</li>
+                <li><span class="highlight">消息队列</span>：Apache Kafka</li>
+                <li><span class="highlight">缓存系统</span>：Redis Cluster</li>
+                <li><span class="highlight">数据存储</span>：MongoDB</li>
+                <li><span class="highlight">监控运维</span>：Prometheus、Grafana、ELK、Jaeger</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let currentZoom = 1;
+        let mermaidContainer = document.getElementById('mermaidContainer');
+
+        // 初始化Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+
+        function zoomIn() {
+            currentZoom = Math.min(currentZoom + 0.2, 3);
+            updateZoom();
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(currentZoom - 0.2, 0.3);
+            updateZoom();
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            updateZoom();
+        }
+
+        function updateZoom() {
+            mermaidContainer.style.transform = `scale(${currentZoom})`;
+            document.getElementById('zoomLevel').textContent = Math.round(currentZoom * 100) + '%';
+        }
+
+        function exportPNG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const data = new XMLSerializer().serializeToString(svg);
+            const img = new Image();
+
+            const svgBlob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            img.onload = function () {
+                canvas.width = img.width * 2;
+                canvas.height = img.height * 2;
+                ctx.scale(2, 2);
+                ctx.drawImage(img, 0, 0);
+
+                canvas.toBlob(function (blob) {
+                    const link = document.createElement('a');
+                    link.download = 'OpenIM系统架构和数据流综合图.png';
+                    link.href = URL.createObjectURL(blob);
+                    link.click();
+                    URL.revokeObjectURL(url);
+                });
+            };
+
+            img.src = url;
+        }
+
+        function exportSVG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const data = new XMLSerializer().serializeToString(svg);
+            const blob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const link = document.createElement('a');
+            link.download = 'OpenIM系统架构和数据流综合图.svg';
+            link.href = URL.createObjectURL(blob);
+            link.click();
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // 鼠标滚轮缩放
+        document.getElementById('diagramContainer').addEventListener('wheel', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                    zoomIn();
+                } else {
+                    zoomOut();
+                }
+            }
+        });
+
+        // 键盘快捷键
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                switch (e.key) {
+                    case '=':
+                    case '+':
+                        e.preventDefault();
+                        zoomIn();
+                        break;
+                    case '-':
+                        e.preventDefault();
+                        zoomOut();
+                        break;
+                    case '0':
+                        e.preventDefault();
+                        resetZoom();
+                        break;
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>

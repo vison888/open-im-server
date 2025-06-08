@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIM企业级即时通讯系统分层架构</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        }
+
+        body {
+            background: linear-gradient(135deg, #f5f7fa 0%, #e4edf5 100%);
+            color: #333;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            padding: 20px 0;
+            margin-bottom: 30px;
+            background: linear-gradient(90deg, #1a2980, #26d0ce);
+            border-radius: 12px;
+            box-shadow: 0 8px 25px rgba(0, 0, 100, 0.15);
+            color: white;
+            position: relative;
+            overflow: hidden;
+        }
+
+        header::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none"><path d="M0,0 L100,0 L100,100 Z" fill="rgba(255,255,255,0.1)"/></svg>');
+            background-size: 100% 100%;
+        }
+
+        h1 {
+            font-size: 2.8rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            position: relative;
+            z-index: 2;
+        }
+
+        .subtitle {
+            font-size: 1.2rem;
+            opacity: 0.9;
+            position: relative;
+            z-index: 2;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin: 25px 0;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #4b6cb7, #182848);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            font-size: 1rem;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 100, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0, 0, 100, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(1px);
+        }
+
+        .btn.export-pdf {
+            background: linear-gradient(135deg, #11998e, #38ef7d);
+        }
+
+        .btn.export-img {
+            background: linear-gradient(135deg, #ff7e5f, #feb47b);
+        }
+
+        .btn.print {
+            background: linear-gradient(135deg, #ff416c, #ff4b2b);
+        }
+
+        .architecture {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0, 0, 100, 0.15);
+            overflow: hidden;
+            margin-bottom: 40px;
+        }
+
+        .layer {
+            padding: 25px;
+            position: relative;
+        }
+
+        .layer::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            width: 8px;
+        }
+
+        .layer-header {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .layer-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .module {
+            background: #f8f9ff;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease;
+            border-top: 4px solid;
+        }
+
+        .module:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0, 0, 100, 0.1);
+        }
+
+        .module-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .module-items {
+            list-style-type: none;
+        }
+
+        .module-items li {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+            display: flex;
+            align-items: flex-start;
+        }
+
+        .module-items li:last-child {
+            border-bottom: none;
+        }
+
+        .module-items li::before {
+            content: "•";
+            color: #4b6cb7;
+            font-weight: bold;
+            display: inline-block;
+            width: 1.2em;
+            margin-left: -1em;
+        }
+
+        .port {
+            background: #e3f2fd;
+            color: #1565c0;
+            font-size: 0.85rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-left: 8px;
+        }
+
+        .file {
+            color: #666;
+            font-size: 0.9rem;
+            font-style: italic;
+            margin-top: 3px;
+        }
+
+        /* Layer-specific styles */
+        .layer-1 {
+            background-color: rgba(52, 152, 219, 0.05);
+        }
+
+        .layer-1::before {
+            background: #3498db;
+        }
+
+        .layer-1 .layer-header {
+            color: #3498db;
+            border-bottom-color: rgba(52, 152, 219, 0.3);
+        }
+
+        .layer-1 .module {
+            border-top-color: #3498db;
+        }
+
+        .layer-2 {
+            background-color: rgba(46, 204, 113, 0.05);
+        }
+
+        .layer-2::before {
+            background: #2ecc71;
+        }
+
+        .layer-2 .layer-header {
+            color: #2ecc71;
+            border-bottom-color: rgba(46, 204, 113, 0.3);
+        }
+
+        .layer-2 .module {
+            border-top-color: #2ecc71;
+        }
+
+        .layer-3 {
+            background-color: rgba(155, 89, 182, 0.05);
+        }
+
+        .layer-3::before {
+            background: #9b59b6;
+        }
+
+        .layer-3 .layer-header {
+            color: #9b59b6;
+            border-bottom-color: rgba(155, 89, 182, 0.3);
+        }
+
+        .layer-3 .module {
+            border-top-color: #9b59b6;
+        }
+
+        .layer-4 {
+            background-color: rgba(230, 126, 34, 0.05);
+        }
+
+        .layer-4::before {
+            background: #e67e22;
+        }
+
+        .layer-4 .layer-header {
+            color: #e67e22;
+            border-bottom-color: rgba(230, 126, 34, 0.3);
+        }
+
+        .layer-4 .module {
+            border-top-color: #e67e22;
+        }
+
+        .layer-5 {
+            background-color: rgba(231, 76, 60, 0.05);
+        }
+
+        .layer-5::before {
+            background: #e74c3c;
+        }
+
+        .layer-5 .layer-header {
+            color: #e74c3c;
+            border-bottom-color: rgba(231, 76, 60, 0.3);
+        }
+
+        .layer-5 .module {
+            border-top-color: #e74c3c;
+        }
+
+        .layer-6 {
+            background-color: rgba(26, 188, 156, 0.05);
+        }
+
+        .layer-6::before {
+            background: #1abc9c;
+        }
+
+        .layer-6 .layer-header {
+            color: #1abc9c;
+            border-bottom-color: rgba(26, 188, 156, 0.3);
+        }
+
+        .layer-6 .module {
+            border-top-color: #1abc9c;
+        }
+
+        .layer-7 {
+            background-color: rgba(139, 195, 74, 0.05);
+        }
+
+        .layer-7::before {
+            background: #8bc34a;
+        }
+
+        .layer-7 .layer-header {
+            color: #8bc34a;
+            border-bottom-color: rgba(139, 195, 74, 0.3);
+        }
+
+        .layer-7 .module {
+            border-top-color: #8bc34a;
+        }
+
+        footer {
+            text-align: center;
+            padding: 25px;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 768px) {
+            .layer-content {
+                grid-template-columns: 1fr;
+            }
+
+            h1 {
+                font-size: 2rem;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .btn {
+                width: 100%;
+                max-width: 300px;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>OpenIM 企业级即时通讯系统</h1>
+            <div class="subtitle">分层架构设计图</div>
+        </header>
+
+        <div class="controls">
+            <button class="btn export-pdf" id="export-pdf">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+                    <path
+                        d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z" />
+                    <path
+                        d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z" />
+                </svg>
+                导出为PDF
+            </button>
+            <button class="btn export-img" id="export-img">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M4.502 9a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z" />
+                    <path
+                        d="M14.002 13a2 2 0 0 1-2 2h-10a2 2 0 0 1-2-2V5A2 2 0 0 1 2 3a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-1.998 2zM14 2H4a1 1 0 0 0-1 1h9.002a2 2 0 0 1 2 2v7A1 1 0 0 0 15 11V3a1 1 0 0 0-1-1zM2.002 4a1 1 0 0 0-1 1v8l2.646-2.354a.5.5 0 0 1 .63-.062l2.66 1.773 3.71-3.71a.5.5 0 0 1 .577-.094l1.777 1.947V5a1 1 0 0 0-1-1h-10z" />
+                </svg>
+                导出为图片
+            </button>
+            <button class="btn print" onclick="window.print()">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+                    <path
+                        d="M5 1a2 2 0 0 0-2 2v1h10V3a2 2 0 0 0-2-2H5zm6 8H5a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1z" />
+                    <path
+                        d="M0 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-1v-2a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v2H2a2 2 0 0 1-2-2V7zm2.5 1a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z" />
+                </svg>
+                打印架构图
+            </button>
+        </div>
+
+        <div id="architecture-diagram" class="architecture">
+            <!-- Layer 1: Client Application Layer -->
+            <div class="layer layer-1">
+                <div class="layer-header">
+                    <div>L1: 客户端应用层</div>
+                </div>
+                <div class="layer-content">
+                    <div class="module">
+                        <div class="module-title">移动端</div>
+                        <ul class="module-items">
+                            <li>iOS应用 <span class="file">Swift/Objective-C</span></li>
+                            <li>Android应用 <span class="file">Kotlin/Java</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">桌面端</div>
+                        <ul class="module-items">
+                            <li>Windows客户端</li>
+                            <li>Mac客户端</li>
+                            <li>Linux客户端</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">Web端</div>
+                        <ul class="module-items">
+                            <li>Web应用 <span class="file">React/Vue</span></li>
+                            <li>H5应用</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">小程序</div>
+                        <ul class="module-items">
+                            <li>微信小程序</li>
+                            <li>支付宝小程序</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Layer 2: API Gateway Layer -->
+            <div class="layer layer-2">
+                <div class="layer-header">L2: API网关层</div>
+                <div class="layer-content">
+                    <div class="module">
+                        <div class="module-title">HTTP网关 <span class="port">端口: 10002</span></div>
+                        <ul class="module-items">
+                            <li>认证路由 <span class="file">auth.go</span></li>
+                            <li>用户路由 <span class="file">user.go</span></li>
+                            <li>消息路由 <span class="file">msg.go</span></li>
+                            <li>群组路由 <span class="file">group.go</span></li>
+                            <li>好友路由 <span class="file">friend.go</span></li>
+                            <li>会话路由 <span class="file">conversation.go</span></li>
+                            <li>第三方路由 <span class="file">third.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">WebSocket网关 <span class="port">端口: 10001</span></div>
+                        <ul class="module-items">
+                            <li>WS服务器 <span class="file">ws_server.go</span></li>
+                            <li>用户映射 <span class="file">user_map.go</span></li>
+                            <li>消息处理 <span class="file">message_handler.go</span></li>
+                            <li>Hub服务 <span class="file">hub_server.go</span></li>
+                            <li>在线管理 <span class="file">online.go</span></li>
+                            <li>订阅管理 <span class="file">subscription.go</span></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Layer 3: Core Business Services -->
+            <div class="layer layer-3">
+                <div class="layer-header">L3: 核心业务服务层</div>
+                <div class="layer-content">
+                    <div class="module">
+                        <div class="module-title">认证授权服务 <span class="port">端口: 10160</span></div>
+                        <ul class="module-items">
+                            <li>Token管理 <span class="file">auth.go</span></li>
+                            <li>权限验证</li>
+                            <li>多端登录控制</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">用户管理服务 <span class="port">端口: 10110</span></div>
+                        <ul class="module-items">
+                            <li>用户管理 <span class="file">user.go</span></li>
+                            <li>在线状态 <span class="file">online.go</span></li>
+                            <li>用户统计 <span class="file">statistics.go</span></li>
+                            <li>用户通知 <span class="file">notification.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">消息核心服务 <span class="port">端口: 10130</span></div>
+                        <ul class="module-items">
+                            <li>消息发送 <span class="file">send.go</span></li>
+                            <li>消息同步 <span class="file">sync_msg.go</span></li>
+                            <li>消息验证 <span class="file">verify.go</span></li>
+                            <li>消息状态 <span class="file">msg_status.go</span></li>
+                            <li>消息序号 <span class="file">seq.go</span></li>
+                            <li>消息撤回 <span class="file">revoke.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">会话管理服务 <span class="port">端口: 10120</span></div>
+                        <ul class="module-items">
+                            <li>会话管理 <span class="file">conversation.go</span></li>
+                            <li>会话同步 <span class="file">sync.go</span></li>
+                            <li>会话通知 <span class="file">notification.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">群组管理服务 <span class="port">端口: 10150</span></div>
+                        <ul class="module-items">
+                            <li>群组管理 <span class="file">group.go</span></li>
+                            <li>群组同步 <span class="file">sync.go</span></li>
+                            <li>群组统计 <span class="file">statistics.go</span></li>
+                            <li>群组通知 <span class="file">notification.go</span></li>
+                            <li>群组回调 <span class="file">callback.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">好友关系服务 <span class="port">端口: 10140</span></div>
+                        <ul class="module-items">
+                            <li>好友管理 <span class="file">friend.go</span></li>
+                            <li>黑名单管理 <span class="file">black.go</span></li>
+                            <li>关系同步 <span class="file">sync.go</span></li>
+                            <li>关系通知 <span class="file">notification.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">第三方服务 <span class="port">端口: 10170</span></div>
+                        <ul class="module-items">
+                            <li>S3存储 <span class="file">s3.go</span></li>
+                            <li>第三方管理 <span class="file">third.go</span></li>
+                            <li>工具管理 <span class="file">tool.go</span></li>
+                            <li>日志管理 <span class="file">log.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">版本增量服务</div>
+                        <ul class="module-items">
+                            <li>批量选项 <span class="file">batch_option.go</span></li>
+                            <li>选项管理 <span class="file">option.go</span></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Layer 4: Message Processing Layer -->
+            <div class="layer layer-4">
+                <div class="layer-header">L4: 消息处理层</div>
+                <div class="layer-content">
+                    <div class="module">
+                        <div class="module-title">消息传输服务 <span class="port">端口: 10180</span></div>
+                        <ul class="module-items">
+                            <li>在线消息 <span class="file">online_msg_to_mongo_handler.go</span></li>
+                            <li>历史消息 <span class="file">online_history_msg_handler.go</span></li>
+                            <li>传输初始化 <span class="file">init.go</span></li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">推送通知服务 <span class="port">端口: 10190</span></div>
+                        <ul class="module-items">
+                            <li>推送处理 <span class="file">push_handler.go</span></li>
+                            <li>在线推送 <span class="file">onlinepusher.go</span></li>
+                            <li>离线推送 <span class="file">offlinepush_handler.go</span></li>
+                            <li>推送回调 <span class="file">callback.go</span></li>
+                            <li>FCM推送</li>
+                            <li>APNS推送</li>
+                            <li>极光推送</li>
+                            <li>个推推送</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Layer 5: Data Access Layer -->
+            <div class="layer layer-5">
+                <div class="layer-header">L5: 数据访问层</div>
+                <div class="layer-content">
+                    <div class="module">
+                        <div class="module-title">缓存层 <span class="port">端口: 6379</span></div>
+                        <ul class="module-items">
+                            <li>Redis集群</li>
+                            <li>用户缓存</li>
+                            <li>消息缓存</li>
+                            <li>在线状态缓存</li>
+                            <li>Token缓存</li>
+                            <li>会话缓存</li>
+                            <li>群组缓存</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">消息队列 <span class="port">端口: 9092</span></div>
+                        <ul class="module-items">
+                            <li>Kafka集群</li>
+                            <li>消息主题</li>
+                            <li>通知主题</li>
+                            <li>回调主题</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Layer 6: Data Storage Layer -->
+            <div class="layer layer-6">
+                <div class="layer-header">L6: 数据存储层</div>
+                <div class="layer-content">
+                    <div class="module">
+                        <div class="module-title">关系型数据库 <span class="port">端口: 3306</span></div>
+                        <ul class="module-items">
+                            <li>MySQL集群</li>
+                            <li>用户表</li>
+                            <li>群组表</li>
+                            <li>好友表</li>
+                            <li>会话表</li>
+                            <li>配置表</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">文档数据库 <span class="port">端口: 27017</span></div>
+                        <ul class="module-items">
+                            <li>MongoDB集群</li>
+                            <li>消息集合</li>
+                            <li>日志集合</li>
+                            <li>文件集合</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">对象存储 <span class="port">端口: 9000</span></div>
+                        <ul class="module-items">
+                            <li>MinIO集群</li>
+                            <li>图片存储</li>
+                            <li>视频存储</li>
+                            <li>文件存储</li>
+                            <li>头像存储</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Layer 7: External Services Layer -->
+            <div class="layer layer-7">
+                <div class="layer-header">L7: 外部服务层</div>
+                <div class="layer-content">
+                    <div class="module">
+                        <div class="module-title">推送服务</div>
+                        <ul class="module-items">
+                            <li>Firebase FCM</li>
+                            <li>Apple APNS</li>
+                            <li>华为推送</li>
+                            <li>小米推送</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">云存储服务</div>
+                        <ul class="module-items">
+                            <li>阿里云OSS</li>
+                            <li>AWS S3</li>
+                            <li>腾讯云COS</li>
+                            <li>七牛云KODO</li>
+                        </ul>
+                    </div>
+                    <div class="module">
+                        <div class="module-title">通信服务</div>
+                        <ul class="module-items">
+                            <li>短信服务</li>
+                            <li>邮件服务</li>
+                            <li>语音服务</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>© 2023 OpenIM企业级即时通讯系统 | 分层架构设计图</p>
+            <p>此架构图展示了OpenIM系统的七层设计，从客户端应用到外部服务</p>
+        </footer>
+    </div>
+
+    <script>
+        // 导出PDF功能
+        document.getElementById('export-pdf').addEventListener('click', function () {
+            const element = document.getElementById('architecture-diagram');
+
+            // 显示导出提示
+            const originalText = this.innerHTML;
+            this.innerHTML = '<span>正在生成PDF，请稍候...</span>';
+            this.disabled = true;
+
+            // 使用html2pdf导出PDF
+            const opt = {
+                margin: 10,
+                filename: 'OpenIM系统架构图.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true },
+                jsPDF: { unit: 'mm', format: 'a3', orientation: 'portrait' }
+            };
+
+            html2pdf().set(opt).from(element).save().then(() => {
+                // 恢复按钮状态
+                this.innerHTML = originalText;
+                this.disabled = false;
+                alert('PDF导出成功！');
+            });
+        });
+
+        // 导出图片功能
+        document.getElementById('export-img').addEventListener('click', function () {
+            const element = document.getElementById('architecture-diagram');
+
+            // 显示导出提示
+            const originalText = this.innerHTML;
+            this.innerHTML = '<span>正在生成图片，请稍候...</span>';
+            this.disabled = true;
+
+            // 使用html2canvas导出图片
+            html2canvas(element, {
+                scale: 2,
+                useCORS: true,
+                allowTaint: true,
+                logging: false,
+                scrollX: 0,
+                scrollY: 0,
+                windowWidth: element.scrollWidth,
+                windowHeight: element.scrollHeight
+            }).then(canvas => {
+                // 转换为图片并下载
+                canvas.toBlob(function (blob) {
+                    saveAs(blob, 'OpenIM系统架构图.png');
+
+                    // 恢复按钮状态
+                    document.getElementById('export-img').innerHTML = originalText;
+                    document.getElementById('export-img').disabled = false;
+                    alert('图片导出成功！');
+                }, 'image/png', 0.95);
+            });
+        });
+    </script>
+</body>
+
+</html>

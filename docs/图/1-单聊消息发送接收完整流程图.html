@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIM单聊消息发送/接收完整流程图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --primary: #3498db;
+            --secondary: #2c3e50;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+            --light: #f8f9fa;
+            --dark: #343a40;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px;
+            background: var(--light);
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn i {
+            font-size: 1.2em;
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 8px 16px;
+            border-radius: 25px;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        .diagram-container {
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 600px;
+            overflow: auto;
+            background: #ffffff;
+            position: relative;
+        }
+
+        .mermaid-container {
+            transform-origin: center center;
+            transition: transform 0.3s ease;
+            max-width: 100%;
+            overflow: visible;
+            min-width: 1000px;
+            min-height: 800px;
+        }
+
+        .description {
+            padding: 30px;
+            background: var(--light);
+            border-top: 1px solid #e9ecef;
+        }
+
+        .description h3 {
+            color: var(--secondary);
+            margin-bottom: 15px;
+            font-size: 1.5em;
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 10px;
+        }
+
+        .description ul {
+            color: #555;
+            line-height: 1.8;
+            padding-left: 20px;
+            margin-bottom: 20px;
+        }
+
+        .description li {
+            margin-bottom: 12px;
+            position: relative;
+        }
+
+        .description li::before {
+            content: "•";
+            color: var(--primary);
+            font-weight: bold;
+            position: absolute;
+            left: -20px;
+        }
+
+        .highlight {
+            background: linear-gradient(120deg, #a8edea 0%, #fed6e3 100%);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+            color: var(--dark);
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+        }
+
+        .status {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 8px 15px;
+            background: rgba(52, 152, 219, 0.1);
+            border: 1px solid var(--primary);
+            border-radius: 20px;
+            color: var(--primary);
+            font-weight: 500;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8em;
+            }
+
+            .header p {
+                font-size: 1em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .zoom-controls {
+                width: 100%;
+                justify-content: space-between;
+            }
+
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .diagram-container {
+                min-height: 400px;
+                padding: 10px;
+            }
+
+            .mermaid-container {
+                min-width: 800px;
+                min-height: 600px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>OpenIM单聊消息发送/接收完整流程图</h1>
+            <p>展示从客户端发送到接收端的完整流程，包含去重和ACK机制</p>
+        </div>
+
+        <div class="controls">
+            <div class="zoom-controls">
+                <button class="zoom-btn" onclick="zoomOut()">-</button>
+                <span id="zoomLevel">100%</span>
+                <button class="zoom-btn" onclick="zoomIn()">+</button>
+            </div>
+            <button class="btn" onclick="resetZoom()">
+                <i>↺</i> 重置缩放
+            </button>
+            <button class="btn" onclick="exportPNG()">
+                <i>🖼️</i> 导出PNG
+            </button>
+            <button class="btn" onclick="exportSVG()">
+                <i>📐</i> 导出SVG
+            </button>
+            <button class="btn" onclick="toggleFullscreen()">
+                <i>⛶</i> 全屏查看
+            </button>
+        </div>
+
+        <div class="diagram-container" id="diagramContainer">
+            <div class="status" id="status">流程图已加载</div>
+            <div class="mermaid-container" id="mermaidContainer">
+                <div class="mermaid" id="diagram">
+                    graph TD
+                    A[客户端准备发送消息] --> B[生成MsgIncr<br />递增序号: '123']
+                    B --> C[生成ClientMsgID<br />client_msg_abc123]
+                    C --> D[构造WebSocket请求<br />ReqIdentifier: 1003]
+
+                    D --> E[添加到待确认映射<br />pendingRequests-msgIncr-123- = chan]
+                    E --> F[通过WebSocket发送]
+                    F --> G[启动超时计时器<br />30秒超时]
+
+                    G --> H[等待服务端响应]
+                    H --> I{30秒内收到响应?}
+
+                    %% 收到响应分支
+                    I -->|是| J[接收ACK响应<br />检查MsgIncr匹配]
+                    J --> K{MsgIncr匹配?}
+                    K -->|否| L[忽略响应<br />可能是其他请求的响应]
+                    K -->|是| M[检查ErrCode]
+
+                    M --> N{ErrCode == 0?}
+                    N -->|是| O[解析响应数据<br />获取ServerMsgID]
+                    N -->|否| P[处理业务错误<br />显示错误信息]
+
+                    O --> Q[更新消息状态<br />Status: SendSuccess]
+                    Q --> R[从待确认映射移除<br />delete-pendingRequests-123-]
+                    R --> S[通知UI层<br />显示发送成功]
+
+                    P --> T[更新消息状态<br />Status: SendFailed]
+                    T --> U[从待确认映射移除]
+                    U --> V[通知UI层<br />显示发送失败]
+
+                    %% 超时重发分支
+                    I -->|否| W[超时触发<br />time.After-30s-]
+                    W --> X[检查重试次数<br />currentRetry < maxRetries-3-] X --> Y{可以重试?}
+
+                        Y -->|是| Z[重试次数+1<br />currentRetry++]
+                        Z --> AA[指数退避延迟<br />delay = 2^retry * 1s]
+                        AA --> BB[等待延迟时间<br />1s, 2s, 4s...]
+                        BB --> CC[重发相同消息<br />保持ClientMsgID不变]
+                        CC --> DD[生成新的MsgIncr<br />msgIncr: '124']
+                        DD --> E
+
+                        Y -->|否| EE[达到最大重试次数<br />标记发送失败]
+                        EE --> FF[更新消息状态<br />Status: SendFailed]
+                        FF --> GG[从待确认映射移除]
+                        GG --> HH[通知UI层<br />显示最终发送失败]
+
+                        %% 服务端ACK构造
+                        II[服务端处理完成] --> JJ[构造ACK响应<br />Resp结构]
+                        JJ --> KK[设置相同ReqIdentifier<br />1003]
+                        KK --> LL[设置相同MsgIncr<br />'123'-关键匹配字段-]
+                        LL --> MM[设置相同OperationID<br />用于日志追踪]
+                        MM --> NN[设置ErrCode<br />0=成功, 其他=错误]
+                        NN --> OO[设置响应数据<br />包含ServerMsgID]
+                        OO --> PP[通过WebSocket返回<br />writeBinaryMsg]
+
+                        %% 客户端ACK处理
+                        PP --> QQ[客户端接收响应<br />onMessage事件]
+                        QQ --> RR[根据MsgIncr查找<br />pendingRequests-'123'-]
+                        RR --> SS{找到对应请求?}
+                        SS -->|是| TT[发送到对应channel<br />channel <- response] SS -->|否| UU[丢弃响应<br />可能是过期响应]
+
+                            TT --> J
+
+                            %% 网络状态感知
+                            VV[网络状态监控] --> WW{网络连接状态}
+                            WW -->|断开| XX[暂停发送<br />等待重连]
+                            WW -->|连接| YY[继续发送队列<br />恢复正常发送]
+
+                            XX --> ZZ[WebSocket重连成功]
+                            ZZ --> AAA[重发未确认消息<br />检查pendingRequests]
+                            AAA --> YY
+
+                            %% 样式设置
+                            style B fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+                            style C fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+                            style LL fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
+                            style DD fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+                            style O fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+                            style Q fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+                            style AA fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+                            style CC fill:#ffecb3,stroke:#ff8f00,stroke-width:2px
+                </div>
+            </div>
+        </div>
+
+        <div class="description">
+            <h3>流程图说明</h3>
+            <ul>
+                <li><span class="highlight">蓝色节点</span>：消息标识符生成（ClientMsgID、ServerMsgID）</li>
+                <li><span class="highlight">绿色节点</span>：Redis缓存操作和去重机制</li>
+                <li><span class="highlight">橙色节点</span>：客户端去重检查</li>
+                <li><span class="highlight">紫色节点</span>：ACK确认机制</li>
+                <li><span class="highlight">红色节点</span>：关键去重环节（原子性序号分配）</li>
+            </ul>
+
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #e1f5fe; border: 2px solid #01579b;"></div>
+                    <span>消息标识生成</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #e8f5e8; border: 2px solid #2e7d32;"></div>
+                    <span>缓存操作</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #fff3e0; border: 2px solid #ef6c00;"></div>
+                    <span>客户端去重</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #f3e5f5; border: 2px solid #7b1fa2;"></div>
+                    <span>ACK机制</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #ffebee; border: 3px solid #c62828;"></div>
+                    <span>关键去重环节</span>
+                </div>
+            </div>
+
+            <h3 style="margin-top: 20px;">核心特点</h3>
+            <ul>
+                <li><strong>多层次去重机制：</strong>在ToRedisTopic前不做去重，允许重复消息进入Kafka，在MsgTransfer通过Redis原子性INCRBY操作实现去重</li>
+                <li><strong>可靠的消息确认：</strong>客户端通过MsgIncr进行ACK匹配，支持超时重发</li>
+                <li><strong>高效的消息处理：</strong>批量消费、批量插入缓存和数据库，提高系统吞吐量</li>
+                <li><strong>智能推送策略：</strong>根据接收方在线状态动态选择在线推送或离线推送</li>
+                <li><strong>完善的错误处理：</strong>超时重试机制（最多3次）和失败状态反馈</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 初始化变量
+        let currentZoom = 1;
+        let mermaidContainer = document.getElementById('mermaidContainer');
+        let statusElement = document.getElementById('status');
+
+        // 初始化Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+
+        // 更新状态
+        function updateStatus(message) {
+            statusElement.textContent = message;
+            setTimeout(() => {
+                statusElement.style.opacity = '0';
+                setTimeout(() => {
+                    statusElement.style.opacity = '1';
+                }, 2000);
+            }, 3000);
+        }
+
+        // 缩放功能
+        function zoomIn() {
+            currentZoom = Math.min(currentZoom + 0.2, 3);
+            updateZoom();
+            updateStatus(`已放大至 ${Math.round(currentZoom * 100)}%`);
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(currentZoom - 0.2, 0.3);
+            updateZoom();
+            updateStatus(`已缩小至 ${Math.round(currentZoom * 100)}%`);
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            updateZoom();
+            updateStatus(`已重置缩放至 100%`);
+        }
+
+        function updateZoom() {
+            mermaidContainer.style.transform = `scale(${currentZoom})`;
+            document.getElementById('zoomLevel').textContent = Math.round(currentZoom * 100) + '%';
+        }
+
+        // 导出功能
+        function exportPNG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                updateStatus('错误：图表未加载完成');
+                return;
+            }
+
+            try {
+                const svgData = new XMLSerializer().serializeToString(svg);
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const img = new Image();
+
+                const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                const url = URL.createObjectURL(svgBlob);
+
+                img.onload = function () {
+                    canvas.width = img.width * 2;
+                    canvas.height = img.height * 2;
+                    ctx.scale(2, 2);
+                    ctx.drawImage(img, 0, 0);
+
+                    canvas.toBlob(function (blob) {
+                        const link = document.createElement('a');
+                        link.download = 'OpenIM单聊消息流程图.png';
+                        link.href = URL.createObjectURL(blob);
+                        link.click();
+                        URL.revokeObjectURL(url);
+                        updateStatus('PNG导出成功！');
+                    });
+                };
+
+                img.src = url;
+            } catch (error) {
+                updateStatus('导出失败: ' + error.message);
+            }
+        }
+
+        function exportSVG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                updateStatus('错误：图表未加载完成');
+                return;
+            }
+
+            try {
+                const svgData = new XMLSerializer().serializeToString(svg);
+                const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                const link = document.createElement('a');
+                link.download = 'OpenIM单聊消息流程图.svg';
+                link.href = URL.createObjectURL(blob);
+                link.click();
+                updateStatus('SVG导出成功！');
+            } catch (error) {
+                updateStatus('导出失败: ' + error.message);
+            }
+        }
+
+        // 全屏功能
+        function toggleFullscreen() {
+            const elem = document.documentElement;
+
+            if (!document.fullscreenElement) {
+                if (elem.requestFullscreen) {
+                    elem.requestFullscreen();
+                    updateStatus('已进入全屏模式');
+                }
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                    updateStatus('已退出全屏模式');
+                }
+            }
+        }
+
+        // 鼠标滚轮缩放
+        document.getElementById('diagramContainer').addEventListener('wheel', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                    zoomIn();
+                } else {
+                    zoomOut();
+                }
+            }
+        });
+
+        // 键盘快捷键
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                switch (e.key) {
+                    case '+':
+                    case '=':
+                        e.preventDefault();
+                        zoomIn();
+                        break;
+                    case '-':
+                        e.preventDefault();
+                        zoomOut();
+                        break;
+                    case '0':
+                        e.preventDefault();
+                        resetZoom();
+                        break;
+                }
+            }
+
+            // F11 全屏
+            if (e.key === 'F11') {
+                e.preventDefault();
+                toggleFullscreen();
+            }
+        });
+
+        // 初始化状态
+        updateStatus('流程图加载中...');
+        setTimeout(() => {
+            updateStatus('流程图已就绪');
+        }, 1500);
+    </script>
+</body>
+
+</html>

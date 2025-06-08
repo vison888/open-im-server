@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIM消息去重机制详细流程图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 50%, #fecfef 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .diagram-container {
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 600px;
+            overflow: auto;
+            background: #ffffff;
+        }
+
+        .mermaid-container {
+            transform-origin: center center;
+            transition: transform 0.3s ease;
+            max-width: 100%;
+            overflow: visible;
+        }
+
+        .description {
+            padding: 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .description h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+
+        .description ul {
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .description li {
+            margin-bottom: 8px;
+        }
+
+        .highlight {
+            background: linear-gradient(120deg, #a8edea 0%, #fed6e3 100%);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+
+        .layer-box {
+            background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 4px solid #ff6b6b;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .zoom-controls {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>OpenIM消息去重机制详细流程图</h1>
+            <p>展示4层去重机制：ToRedisTopic前、MsgTransfer、推送服务、客户端</p>
+        </div>
+
+        <div class="controls">
+            <div class="zoom-controls">
+                <button class="btn zoom-btn" onclick="zoomOut()">-</button>
+                <span id="zoomLevel">100%</span>
+                <button class="btn zoom-btn" onclick="zoomIn()">+</button>
+            </div>
+            <button class="btn" onclick="resetZoom()">重置缩放</button>
+            <button class="btn" onclick="exportPNG()">导出PNG</button>
+            <button class="btn" onclick="exportSVG()">导出SVG</button>
+            <button class="btn" onclick="toggleFullscreen()">全屏查看</button>
+        </div>
+
+        <div class="diagram-container" id="diagramContainer">
+            <div class="mermaid-container" id="mermaidContainer">
+                <div class="mermaid" id="diagram">
+                    graph TD
+                    A[客户端重发消息<br />相同ClientMsgID] --> B[消息进入Kafka ToRedisTopic<br />允许重复消息]
+
+                    B --> C[MsgTransfer消费<br />可能收到多条相同消息]
+                    C --> D[批量处理消息<br />parseConsumerMessages]
+
+                    D --> E[检查消息数量限制<br />lenList > GetSingleGocMsgNum?]
+                    E -->|超限| F[返回错误<br />防止批量攻击]
+                    E -->|正常| G[Redis原子性序号分配<br />seqConversation.Malloc]
+
+                    G --> H[执行INCRBY操作<br />key: seq:conversationID<br />increment: len-msgs]
+                    H --> I[获取起始序号<br />startSeq = result - count]
+
+                    I --> J[为每条消息分配序号]
+                    J --> K[第1条: Seq = startSeq + 1<br />第2条: Seq = startSeq + 2<br />第N条: Seq = startSeq + N]
+
+                    K --> L[构建Redis存储键<br />msg:conversationID:seq]
+                    L --> M[批量写入Redis<br />SetMessageBySeqs]
+
+                    M --> N[设置消息到Redis<br />key格式: msg:conv_id:1001<br />value: 消息JSON数据]
+                    N --> O[设置过期时间<br />24小时有效期]
+
+                    O --> P{重复ClientMsgID检测}
+                    P -->|发现重复| Q[检查时间窗口<br />时间差 < 30秒?] Q -->|是| R[标记为重复消息<br />不推送给用户]
+                        Q -->|否| S[认为是新消息<br />正常处理]
+                        P -->|无重复| S
+
+                        S --> T[发送到推送队列<br />只发送非重复消息]
+                        T --> U[推送到在线用户]
+
+                        %% 客户端去重分支
+                        U --> V[客户端接收消息]
+                        V --> W[检查本地数据库<br />SELECT FROM messages<br />WHERE client_msg_id = ?]
+                        W --> X{本地已存在?}
+                        X -->|是| Y[忽略重复消息<br />不显示给用户]
+                        X -->|否| Z[保存到本地数据库<br />显示给用户]
+
+                        %% 去重层次说明
+                        AA[去重层次说明] --> BB[1. ToRedisTopic前: 无去重<br />允许重复进入Kafka]
+                        AA --> CC[2. MsgTransfer: 序号去重<br />每条消息获得唯一Seq]
+                        AA --> DD[3. 推送服务: ClientMsgID去重<br />检查时间窗口避免重复推送]
+                        AA --> EE[4. 客户端: 本地去重<br />检查本地数据库避免重复显示]
+
+                        %% 样式设置
+                        style H fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
+                        style I fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
+                        style K fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+                        style N fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+                        style Q fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+                        style W fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+
+                        style BB fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px
+                        style CC fill:#e8f5e8,stroke:#2e7d32,stroke-width:1px
+                        style DD fill:#fff3e0,stroke:#ef6c00,stroke-width:1px
+                        style EE fill:#e1f5fe,stroke:#01579b,stroke-width:1px
+                </div>
+            </div>
+        </div>
+
+        <div class="description">
+            <h3>消息去重机制说明</h3>
+
+            <div class="layer-box">
+                <h4>第1层：ToRedisTopic前 - 无去重策略</h4>
+                <p><strong>设计理念：</strong>简化msg服务逻辑，提高吞吐量，允许重复消息进入Kafka</p>
+                <p><strong>优点：</strong>减少msg服务的复杂度，避免成为性能瓶颈</p>
+            </div>
+
+            <div class="layer-box">
+                <h4>第2层：MsgTransfer - 序号去重（核心机制）</h4>
+                <p><strong>关键技术：</strong>Redis原子性INCRBY操作分配唯一序号</p>
+                <p><strong>实现方式：</strong>每条消息获得conversationID:seq唯一键</p>
+                <p><strong>防重复：</strong>相同消息重复插入会覆盖，但序号保证唯一性</p>
+            </div>
+
+            <div class="layer-box">
+                <h4>第3层：推送服务 - ClientMsgID去重</h4>
+                <p><strong>检测机制：</strong>检查ClientMsgID和时间窗口（30秒内）</p>
+                <p><strong>处理策略：</strong>重复消息不推送给用户，避免重复通知</p>
+            </div>
+
+            <div class="layer-box">
+                <h4>第4层：客户端 - 本地去重</h4>
+                <p><strong>最后防线：</strong>检查本地数据库，避免重复显示</p>
+                <p><strong>用户体验：</strong>确保用户界面不出现重复消息</p>
+            </div>
+
+            <ul>
+                <li><span class="highlight">红色节点</span>：Redis原子性操作，去重核心</li>
+                <li><span class="highlight">绿色节点</span>：消息存储和序号分配</li>
+                <li><span class="highlight">橙色节点</span>：时间窗口检测</li>
+                <li><span class="highlight">蓝色节点</span>：客户端本地检查</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let currentZoom = 1;
+        let mermaidContainer = document.getElementById('mermaidContainer');
+
+        // 初始化Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+
+        function zoomIn() {
+            currentZoom = Math.min(currentZoom + 0.2, 3);
+            updateZoom();
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(currentZoom - 0.2, 0.3);
+            updateZoom();
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            updateZoom();
+        }
+
+        function updateZoom() {
+            mermaidContainer.style.transform = `scale(${currentZoom})`;
+            document.getElementById('zoomLevel').textContent = Math.round(currentZoom * 100) + '%';
+        }
+
+        function exportPNG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const data = new XMLSerializer().serializeToString(svg);
+            const img = new Image();
+
+            const svgBlob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            img.onload = function () {
+                canvas.width = img.width * 2;
+                canvas.height = img.height * 2;
+                ctx.scale(2, 2);
+                ctx.drawImage(img, 0, 0);
+
+                canvas.toBlob(function (blob) {
+                    const link = document.createElement('a');
+                    link.download = 'OpenIM消息去重机制详细流程图.png';
+                    link.href = URL.createObjectURL(blob);
+                    link.click();
+                    URL.revokeObjectURL(url);
+                });
+            };
+
+            img.src = url;
+        }
+
+        function exportSVG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const data = new XMLSerializer().serializeToString(svg);
+            const blob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const link = document.createElement('a');
+            link.download = 'OpenIM消息去重机制详细流程图.svg';
+            link.href = URL.createObjectURL(blob);
+            link.click();
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // 鼠标滚轮缩放
+        document.getElementById('diagramContainer').addEventListener('wheel', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                    zoomIn();
+                } else {
+                    zoomOut();
+                }
+            }
+        });
+
+        // 键盘快捷键
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                switch (e.key) {
+                    case '=':
+                    case '+':
+                        e.preventDefault();
+                        zoomIn();
+                        break;
+                    case '-':
+                        e.preventDefault();
+                        zoomOut();
+                        break;
+                    case '0':
+                        e.preventDefault();
+                        resetZoom();
+                        break;
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>

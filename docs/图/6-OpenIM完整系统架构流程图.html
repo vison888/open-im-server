@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIM完整系统架构流程图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --primary: #3498db;
+            --secondary: #2c3e50;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+            --light: #f8f9fa;
+            --dark: #343a40;
+            --info: #17a2b8;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px;
+            background: var(--light);
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn i {
+            font-size: 1.2em;
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 8px 16px;
+            border-radius: 25px;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        .diagram-container {
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 800px;
+            overflow: auto;
+            background: #ffffff;
+            position: relative;
+        }
+
+        .mermaid-container {
+            transform-origin: center center;
+            transition: transform 0.3s ease;
+            max-width: 100%;
+            overflow: visible;
+            min-width: 1200px;
+            min-height: 1000px;
+            cursor: grab;
+            position: relative;
+        }
+
+        .mermaid-container:active {
+            cursor: grabbing;
+        }
+
+        .description {
+            padding: 30px;
+            background: var(--light);
+            border-top: 1px solid #e9ecef;
+        }
+
+        .description h3 {
+            color: var(--secondary);
+            margin-bottom: 15px;
+            font-size: 1.5em;
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 10px;
+        }
+
+        .description ul {
+            color: #555;
+            line-height: 1.8;
+            padding-left: 20px;
+            margin-bottom: 20px;
+        }
+
+        .description li {
+            margin-bottom: 12px;
+            position: relative;
+        }
+
+        .description li::before {
+            content: "•";
+            color: var(--primary);
+            font-weight: bold;
+            position: absolute;
+            left: -20px;
+        }
+
+        .highlight {
+            background: linear-gradient(120deg, #a8edea 0%, #fed6e3 100%);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+            color: var(--dark);
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+        }
+
+        .status {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 8px 15px;
+            background: rgba(52, 152, 219, 0.1);
+            border: 1px solid var(--primary);
+            border-radius: 20px;
+            color: var(--primary);
+            font-weight: 500;
+        }
+
+        .layer-desc {
+            background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+            padding: 20px;
+            border-radius: 10px;
+            margin: 15px 0;
+            border-left: 4px solid #667eea;
+        }
+
+        .layer-desc h4 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8em;
+            }
+
+            .header p {
+                font-size: 1em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .zoom-controls {
+                width: 100%;
+                justify-content: space-between;
+            }
+
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .diagram-container {
+                min-height: 400px;
+                padding: 10px;
+            }
+
+            .mermaid-container {
+                min-width: 1000px;
+                min-height: 800px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>OpenIM完整系统架构流程图</h1>
+            <p>展示从客户端到存储层的完整消息流转，突出关键去重和ACK机制</p>
+        </div>
+
+        <div class="controls">
+            <div class="zoom-controls">
+                <button class="zoom-btn" onclick="zoomOut()">-</button>
+                <span id="zoomLevel">100%</span>
+                <button class="zoom-btn" onclick="zoomIn()">+</button>
+            </div>
+            <button class="btn" onclick="resetZoom()">
+                <i>↺</i> 重置缩放
+            </button>
+            <button class="btn" onclick="exportPNG()">
+                <i>🖼️</i> 导出PNG
+            </button>
+            <button class="btn" onclick="exportSVG()">
+                <i>📐</i> 导出SVG
+            </button>
+            <button class="btn" onclick="toggleFullscreen()">
+                <i>⛶</i> 全屏查看
+            </button>
+        </div>
+
+        <div class="diagram-container" id="diagramContainer">
+            <div class="status" id="status">架构图已加载</div>
+            <div class="mermaid-container" id="mermaidContainer">
+                <div class="mermaid" id="diagram">
+                    graph TD
+                    %% 客户端层
+                    subgraph "客户端应用层"
+                    A1[发送端APP]
+                    A2[接收端APP]
+                    A3[本地SQLite数据库]
+                    A4[消息队列管理器]
+                    end
+
+                    %% 网关层
+                    subgraph "消息网关层 - msggateway"
+                    B1[WebSocket服务器<br />ws_server.go]
+                    B2[连接管理器<br />client.go]
+                    B3[消息编解码器<br />Encoder/Decoder]
+                    B4[压缩/解压模块<br />Compression]
+                    end
+
+                    %% API层
+                    subgraph "API服务层 - api"
+                    C1[HTTP API网关<br />msg.go]
+                    C2[身份验证<br />authverify]
+                    C3[参数验证<br />Validation]
+                    end
+
+                    %% RPC服务层
+                    subgraph "核心服务层 - rpc/msg"
+                    D1[消息发送服务<br />send.go]
+                    D2[消息验证模块<br />verify.go]
+                    D3[消息封装器<br />encapsulateMsgData]
+                    D4[Webhook处理器<br />webhook.go]
+                    end
+
+                    %% 消息队列层
+                    subgraph "消息队列层 - Kafka"
+                    E1[ToRedisTopic<br />原始消息队列]
+                    E2[ToPushTopic<br />推送消息队列]
+                    E3[ToMongoTopic<br />持久化消息队列]
+                    end
+
+                    %% 消息转发层
+                    subgraph "消息转发层 - msgtransfer"
+                    F1[在线消息处理器<br />online_history_msg_handler.go]
+                    F2[消息分类器<br />categorizeMessageLists]
+                    F3[批量缓存插入器<br />BatchInsertChat2Cache]
+                    F4[序号分配器<br />Seq Allocator]
+                    end
+
+                    %% 推送服务层
+                    subgraph "推送服务层 - push"
+                    G1[推送消息处理器<br />push_handler.go]
+                    G2[在线推送器<br />onlinepusher.go]
+                    G3[离线推送器<br />offlinepush_handler.go]
+                    G4[推送状态管理器<br />push.go]
+                    end
+
+                    %% 缓存存储层
+                    subgraph "缓存存储层 - Redis集群"
+                    H1[消息缓存<br />msg:conv:seq]
+                    H2[序号缓存<br />seq:conv_id]
+                    H3[用户在线状态<br />user_online:user_id]
+                    H4[会话缓存<br />conversation:user_id]
+                    end
+
+                    %% 持久化存储层
+                    subgraph "持久化存储层 - MongoDB"
+                    I1[消息文档集合<br />messages]
+                    I2[会话文档集合<br />conversations]
+                    I3[用户文档集合<br />users]
+                    I4[消息索引<br />client_msg_id, server_msg_id]
+                    end
+
+                    %% 外部服务层
+                    subgraph "外部服务层"
+                    J1[APNs推送<br />iOS离线推送]
+                    J2[FCM推送<br />Android离线推送]
+                    J3[Webhook回调<br />第三方系统集成]
+                    end
+
+                    %% 主要数据流 - 关键路径突出显示
+                    A1 -->|1. WebSocket发送<br />ClientMsgID + MsgIncr| B1
+                    B1 -->|2. 身份验证<br />Token验证| B2
+                    B2 -->|3. RPC调用<br />SendMsg请求| D1
+
+                    D1 -->|4. 消息验证<br />好友关系/黑名单| D2
+                    D2 -->|5. 生成ServerMsgID<br />设置发送时间| D3
+                    D3 -->|6. 发送到消息队列<br />无去重| E1
+                    D1 -->|7. 返回ACK<br />MsgIncr匹配| B1
+                    B1 -->|8. WebSocket响应<br />包含ServerMsgID| A1
+
+                    E1 -->|9. Kafka消费<br />批量处理| F1
+                    F1 -->|10. 消息分类<br />存储/非存储| F2
+                    F2 -->|11. 序号分配<br />Redis INCRBY| F4
+                    F4 -->|12. 唯一序号<br />防重复| H2
+                    F3 -->|13. 批量写入<br />24小时TTL| H1
+
+                    F1 -->|14. 推送队列<br />在线用户推送| E2
+                    F1 -->|15. 持久化队列<br />MongoDB存储| E3
+
+                    E2 -->|16. 推送消费<br />获取在线状态| G1
+                    G1 -->|17. 在线状态查询| H3
+                    G1 -->|18. 在线推送<br />WebSocket| G2
+                    G2 -->|19. 推送到网关<br />WSPushMsg| B1
+                    B1 -->|20. 推送到客户端<br />实时接收| A2
+
+                    G1 -->|21. 离线推送<br />APNS/FCM| G3
+                    G3 -->|22. 外部推送服务| J1
+                    G3 -->|23. 外部推送服务| J2
+
+                    E3 -->|24. MongoDB消费<br />持久化存储| I1
+
+                    %% 去重检查流程
+                    A2 -->|25. 消息去重检查<br />本地数据库| A3
+                    A3 -->|26. 更新本地会话<br />UI刷新| A2
+
+                    %% 错误处理和重试
+                    A1 -.->|超时重发<br />指数退避| A4
+                    A4 -.->|重试队列<br />保持ClientMsgID| B1
+
+                    %% Webhook集成
+                    D1 -.->|前置处理<br />消息修改| J3
+                    G1 -.->|后置处理<br />发送通知| J3
+
+                    %% 样式设置 - 突出关键信息
+                    %% 关键去重节点 - 红色高亮
+                    style F4 fill:#ff4757,stroke:#2f3542,stroke-width:4px,color:#ffffff
+                    style H2 fill:#ff4757,stroke:#2f3542,stroke-width:4px,color:#ffffff
+
+                    %% 关键缓存节点 - 绿色高亮
+                    style F3 fill:#2ed573,stroke:#2f3542,stroke-width:3px,color:#ffffff
+                    style H1 fill:#2ed573,stroke:#2f3542,stroke-width:3px,color:#ffffff
+
+                    %% ACK确认关键节点 - 蓝色高亮
+                    style B1 fill:#3742fa,stroke:#2f3542,stroke-width:3px,color:#ffffff
+                    style D1 fill:#3742fa,stroke:#2f3542,stroke-width:3px,color:#ffffff
+
+                    %% 客户端去重 - 橙色高亮
+                    style A3 fill:#ff6348,stroke:#2f3542,stroke-width:3px,color:#ffffff
+
+                    %% 消息队列核心 - 紫色高亮
+                    style E1 fill:#8e44ad,stroke:#2f3542,stroke-width:3px,color:#ffffff
+                    style E2 fill:#9c88ff,stroke:#2f3542,stroke-width:2px,color:#ffffff
+                    style E3 fill:#9c88ff,stroke:#2f3542,stroke-width:2px,color:#ffffff
+
+                    %% 推送核心 - 青色高亮
+                    style G1 fill:#00d2d3,stroke:#2f3542,stroke-width:2px,color:#ffffff
+                    style G2 fill:#00d2d3,stroke:#2f3542,stroke-width:2px,color:#ffffff
+
+                    %% 网关层 - 黄色高亮
+                    style B2 fill:#ffa502,stroke:#2f3542,stroke-width:2px,color:#ffffff
+
+                    %% 存储层 - 灰色
+                    style I1 fill:#747d8c,stroke:#2f3542,stroke-width:2px,color:#ffffff
+                    style H3 fill:#a4b0be,stroke:#2f3542,stroke-width:1px,color:#2f3542
+                    style H4 fill:#a4b0be,stroke:#2f3542,stroke-width:1px,color:#2f3542
+                </div>
+            </div>
+        </div>
+
+        <div class="description">
+            <h3>系统架构关键节点说明</h3>
+
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #ff4757; border: 2px solid #2f3542;"></div>
+                    <span><strong>核心去重机制</strong> - 序号分配器和Redis序号缓存</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #2ed573; border: 2px solid #2f3542;"></div>
+                    <span><strong>缓存写入机制</strong> - 批量插入器和消息缓存</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #3742fa; border: 2px solid #2f3542;"></div>
+                    <span><strong>ACK确认机制</strong> - WebSocket服务器和消息发送服务</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #ff6348; border: 2px solid #2f3542;"></div>
+                    <span><strong>客户端去重</strong> - 本地SQLite数据库检查</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #8e44ad; border: 2px solid #2f3542;"></div>
+                    <span><strong>消息队列核心</strong> - ToRedisTopic原始队列</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #00d2d3; border: 2px solid #2f3542;"></div>
+                    <span><strong>推送处理</strong> - 推送消息处理器和在线推送器</span>
+                </div>
+            </div>
+
+            <div class="layer-desc">
+                <h4>🔴 核心去重机制（红色节点）</h4>
+                <p><strong>序号分配器 (F4)：</strong>使用Redis INCRBY原子操作为每条消息分配唯一序号</p>
+                <p><strong>序号缓存 (H2)：</strong>存储会话的当前最大序号，key格式：seq:conv_id</p>
+                <p><strong>作用：</strong>这是整个系统防重复的核心机制，确保消息的全局唯一性</p>
+            </div>
+
+            <div class="layer-desc">
+                <h4>🟢 缓存写入机制（绿色节点）</h4>
+                <p><strong>批量缓存插入器 (F3)：</strong>批量写入消息到Redis，提高性能</p>
+                <p><strong>消息缓存 (H1)：</strong>存储消息内容，key格式：msg:conv:seq，24小时TTL</p>
+                <p><strong>作用：</strong>提供快速的消息访问，支持离线消息拉取</p>
+            </div>
+
+            <div class="layer-desc">
+                <h4>🔵 ACK确认机制（蓝色节点）</h4>
+                <p><strong>WebSocket服务器 (B1)：</strong>处理客户端连接，发送ACK响应</p>
+                <p><strong>消息发送服务 (D1)：</strong>生成ServerMsgID，处理消息验证和发送</p>
+                <p><strong>作用：</strong>确保消息可靠投递，支持客户端重试机制</p>
+            </div>
+
+            <h3>数据流转26个关键步骤</h3>
+            <ul>
+                <li><strong>步骤1-8：</strong>客户端发送消息到服务器并获得ACK确认</li>
+                <li><strong>步骤9-13：</strong>消息队列消费、序号分配、缓存写入（核心去重）</li>
+                <li><strong>步骤14-20：</strong>推送处理，实时推送给在线接收者</li>
+                <li><strong>步骤21-23：</strong>离线推送，通过APNs/FCM推送给离线用户</li>
+                <li><strong>步骤24：</strong>MongoDB持久化存储</li>
+                <li><strong>步骤25-26：</strong>接收端去重检查和UI更新</li>
+            </ul>
+
+            <h3>架构设计亮点</h3>
+            <ul>
+                <li><strong>多层次去重：</strong>MsgTransfer序号去重 + 客户端本地去重</li>
+                <li><strong>异步处理：</strong>Kafka消息队列实现异步解耦</li>
+                <li><strong>高可用设计：</strong>Redis集群 + MongoDB分片 + 微服务架构</li>
+                <li><strong>智能推送：</strong>根据在线状态动态选择推送方式</li>
+                <li><strong>可扩展性：</strong>每个服务层都支持水平扩展</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 初始化变量
+        let currentZoom = 1;
+        let mermaidContainer = document.getElementById('mermaidContainer');
+        let statusElement = document.getElementById('status');
+
+        // 拖拽相关变量
+        let isDragging = false;
+        let startX = 0;
+        let startY = 0;
+        let translateX = 0;
+        let translateY = 0;
+
+        // 初始化Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+
+        // 更新状态
+        function updateStatus(message) {
+            statusElement.textContent = message;
+            setTimeout(() => {
+                statusElement.style.opacity = '0';
+                setTimeout(() => {
+                    statusElement.style.opacity = '1';
+                }, 2000);
+            }, 3000);
+        }
+
+        // 缩放功能
+        function zoomIn() {
+            currentZoom = Math.min(currentZoom + 0.2, 3);
+            updateZoom();
+            updateStatus(`已放大至 ${Math.round(currentZoom * 100)}%`);
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(currentZoom - 0.2, 0.3);
+            updateZoom();
+            updateStatus(`已缩小至 ${Math.round(currentZoom * 100)}%`);
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            translateX = 0;
+            translateY = 0;
+            updateZoom();
+            updateStatus(`已重置缩放和位置`);
+        }
+
+        function updateZoom() {
+            mermaidContainer.style.transform = `scale(${currentZoom}) translate(${translateX}px, ${translateY}px)`;
+            document.getElementById('zoomLevel').textContent = Math.round(currentZoom * 100) + '%';
+        }
+
+        // 导出功能
+        function exportPNG() {
+            updateStatus('正在准备PNG导出...');
+
+            // 等待mermaid渲染完成
+            setTimeout(() => {
+                const svg = document.querySelector('#diagram svg');
+                if (!svg) {
+                    updateStatus('错误：图表未加载完成，请等待几秒后重试');
+                    return;
+                }
+
+                try {
+                    // 克隆SVG以避免修改原始元素
+                    const svgClone = svg.cloneNode(true);
+
+                    // 设置SVG的宽高
+                    const svgRect = svg.getBoundingClientRect();
+                    svgClone.setAttribute('width', svgRect.width);
+                    svgClone.setAttribute('height', svgRect.height);
+
+                    // 添加白色背景
+                    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    rect.setAttribute('width', '100%');
+                    rect.setAttribute('height', '100%');
+                    rect.setAttribute('fill', 'white');
+                    svgClone.insertBefore(rect, svgClone.firstChild);
+
+                    const svgData = new XMLSerializer().serializeToString(svgClone);
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const img = new Image();
+
+                    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                    const url = URL.createObjectURL(svgBlob);
+
+                    img.onload = function () {
+                        // 设置高分辨率
+                        const scale = 2;
+                        canvas.width = img.width * scale;
+                        canvas.height = img.height * scale;
+                        ctx.scale(scale, scale);
+
+                        // 绘制白色背景
+                        ctx.fillStyle = 'white';
+                        ctx.fillRect(0, 0, img.width, img.height);
+
+                        // 绘制SVG
+                        ctx.drawImage(img, 0, 0);
+
+                        // 导出为PNG
+                        canvas.toBlob(function (blob) {
+                            if (blob) {
+                                const link = document.createElement('a');
+                                link.download = 'OpenIM完整系统架构流程图.png';
+                                link.href = URL.createObjectURL(blob);
+                                document.body.appendChild(link);
+                                link.click();
+                                document.body.removeChild(link);
+                                URL.revokeObjectURL(link.href);
+                                updateStatus('PNG导出成功！');
+                            } else {
+                                updateStatus('PNG导出失败：无法生成图像');
+                            }
+                        }, 'image/png', 1.0);
+
+                        URL.revokeObjectURL(url);
+                    };
+
+                    img.onerror = function () {
+                        updateStatus('PNG导出失败：图像加载错误');
+                        URL.revokeObjectURL(url);
+                    };
+
+                    img.src = url;
+                } catch (error) {
+                    updateStatus('PNG导出失败: ' + error.message);
+                    console.error('Export error:', error);
+                }
+            }, 500);
+        }
+
+        function exportSVG() {
+            updateStatus('正在准备SVG导出...');
+
+            setTimeout(() => {
+                const svg = document.querySelector('#diagram svg');
+                if (!svg) {
+                    updateStatus('错误：图表未加载完成，请等待几秒后重试');
+                    return;
+                }
+
+                try {
+                    // 克隆SVG
+                    const svgClone = svg.cloneNode(true);
+
+                    // 设置SVG的宽高
+                    const svgRect = svg.getBoundingClientRect();
+                    svgClone.setAttribute('width', svgRect.width);
+                    svgClone.setAttribute('height', svgRect.height);
+
+                    const svgData = new XMLSerializer().serializeToString(svgClone);
+                    const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                    const link = document.createElement('a');
+                    link.download = 'OpenIM完整系统架构流程图.svg';
+                    link.href = URL.createObjectURL(blob);
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                    updateStatus('SVG导出成功！');
+                } catch (error) {
+                    updateStatus('SVG导出失败: ' + error.message);
+                    console.error('SVG Export error:', error);
+                }
+            }, 300);
+        }
+
+        // 全屏功能
+        function toggleFullscreen() {
+            const elem = document.documentElement;
+
+            if (!document.fullscreenElement) {
+                if (elem.requestFullscreen) {
+                    elem.requestFullscreen();
+                    updateStatus('已进入全屏模式');
+                }
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                    updateStatus('已退出全屏模式');
+                }
+            }
+        }
+
+        // 添加拖拽功能
+        function addDragFunctionality() {
+            const container = document.getElementById('diagramContainer');
+
+            // 鼠标事件
+            mermaidContainer.addEventListener('mousedown', startDrag);
+            document.addEventListener('mousemove', drag);
+            document.addEventListener('mouseup', endDrag);
+
+            // 触摸事件（移动端支持）
+            mermaidContainer.addEventListener('touchstart', handleTouchStart, { passive: false });
+            document.addEventListener('touchmove', handleTouchMove, { passive: false });
+            document.addEventListener('touchend', endDrag);
+
+            function startDrag(e) {
+                e.preventDefault();
+                isDragging = true;
+                startX = e.clientX - translateX;
+                startY = e.clientY - translateY;
+                mermaidContainer.style.cursor = 'grabbing';
+            }
+
+            function drag(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+
+                translateX = e.clientX - startX;
+                translateY = e.clientY - startY;
+                updateZoom();
+            }
+
+            function endDrag() {
+                if (isDragging) {
+                    isDragging = false;
+                    mermaidContainer.style.cursor = 'grab';
+                }
+            }
+
+            function handleTouchStart(e) {
+                if (e.touches.length === 1) {
+                    const touch = e.touches[0];
+                    isDragging = true;
+                    startX = touch.clientX - translateX;
+                    startY = touch.clientY - translateY;
+                }
+            }
+
+            function handleTouchMove(e) {
+                if (isDragging && e.touches.length === 1) {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    translateX = touch.clientX - startX;
+                    translateY = touch.clientY - startY;
+                    updateZoom();
+                }
+            }
+        }
+
+        // 鼠标滚轮缩放
+        document.getElementById('diagramContainer').addEventListener('wheel', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                    zoomIn();
+                } else {
+                    zoomOut();
+                }
+            }
+        });
+
+        // 键盘快捷键
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                switch (e.key) {
+                    case '+':
+                    case '=':
+                        e.preventDefault();
+                        zoomIn();
+                        break;
+                    case '-':
+                        e.preventDefault();
+                        zoomOut();
+                        break;
+                    case '0':
+                        e.preventDefault();
+                        resetZoom();
+                        break;
+                }
+            }
+
+            // F11 全屏
+            if (e.key === 'F11') {
+                e.preventDefault();
+                toggleFullscreen();
+            }
+        });
+
+        // 初始化状态和功能
+        updateStatus('架构图加载中...');
+
+        // 等待Mermaid完全加载后启用拖拽功能
+        setTimeout(() => {
+            addDragFunctionality();
+            updateStatus('架构图已就绪，支持拖拽和缩放');
+        }, 2000);
+    </script>
+</body>
+
+</html>

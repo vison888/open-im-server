@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIM ACK确认机制详细流程图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .diagram-container {
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 600px;
+            overflow: auto;
+            background: #ffffff;
+        }
+
+        .mermaid-container {
+            transform-origin: center center;
+            transition: transform 0.3s ease;
+            max-width: 100%;
+            overflow: visible;
+        }
+
+        .description {
+            padding: 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .description h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+
+        .description ul {
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .description li {
+            margin-bottom: 8px;
+        }
+
+        .highlight {
+            background: linear-gradient(120deg, #a8edea 0%, #fed6e3 100%);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+
+        .feature-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 15px 0;
+        }
+
+        .feature-box h4 {
+            margin-top: 0;
+            color: #fff;
+        }
+
+        .code-box {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            margin: 10px 0;
+            overflow-x: auto;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .zoom-controls {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>OpenIM ACK确认机制详细流程图</h1>
+            <p>展示MsgIncr匹配、指数退避重试、网络状态感知等完整ACK机制</p>
+        </div>
+
+        <div class="controls">
+            <div class="zoom-controls">
+                <button class="btn zoom-btn" onclick="zoomOut()">-</button>
+                <span id="zoomLevel">100%</span>
+                <button class="btn zoom-btn" onclick="zoomIn()">+</button>
+            </div>
+            <button class="btn" onclick="resetZoom()">重置缩放</button>
+            <button class="btn" onclick="exportPNG()">导出PNG</button>
+            <button class="btn" onclick="exportSVG()">导出SVG</button>
+            <button class="btn" onclick="toggleFullscreen()">全屏查看</button>
+        </div>
+
+        <div class="diagram-container" id="diagramContainer">
+            <div class="mermaid-container" id="mermaidContainer">
+                <div class="mermaid" id="diagram">
+                    graph TD
+                    A[客户端准备发送消息] --> B[生成MsgIncr<br />递增序号: '123']
+                    B --> C[生成ClientMsgID<br />client_msg_abc123]
+                    C --> D[构造WebSocket请求<br />ReqIdentifier: 1003]
+
+                    D --> E[添加到待确认映射<br />pendingRequests-msgIncr-123- = chan]
+                    E --> F[通过WebSocket发送]
+                    F --> G[启动超时计时器<br />30秒超时]
+
+                    G --> H[等待服务端响应]
+                    H --> I{30秒内收到响应?}
+
+                    %% 收到响应分支
+                    I -->|是| J[接收ACK响应<br />检查MsgIncr匹配]
+                    J --> K{MsgIncr匹配?}
+                    K -->|否| L[忽略响应<br />可能是其他请求的响应]
+                    K -->|是| M[检查ErrCode]
+
+                    M --> N{ErrCode == 0?}
+                    N -->|是| O[解析响应数据<br />获取ServerMsgID]
+                    N -->|否| P[处理业务错误<br />显示错误信息]
+
+                    O --> Q[更新消息状态<br />Status: SendSuccess]
+                    Q --> R[从待确认映射移除<br />delete-pendingRequests-123-]
+                    R --> S[通知UI层<br />显示发送成功]
+
+                    P --> T[更新消息状态<br />Status: SendFailed]
+                    T --> U[从待确认映射移除]
+                    U --> V[通知UI层<br />显示发送失败]
+
+                    %% 超时重发分支
+                    I -->|否| W[超时触发<br />time.After-30s-]
+                    W --> X[检查重试次数<br />currentRetry < maxRetries-3-] X --> Y{可以重试?}
+
+                        Y -->|是| Z[重试次数+1<br />currentRetry++]
+                        Z --> AA[指数退避延迟<br />delay = 2^retry * 1s]
+                        AA --> BB[等待延迟时间<br />1s, 2s, 4s...]
+                        BB --> CC[重发相同消息<br />保持ClientMsgID不变]
+                        CC --> DD[生成新的MsgIncr<br />msgIncr: '124']
+                        DD --> E
+
+                        Y -->|否| EE[达到最大重试次数<br />标记发送失败]
+                        EE --> FF[更新消息状态<br />Status: SendFailed]
+                        FF --> GG[从待确认映射移除]
+                        GG --> HH[通知UI层<br />显示最终发送失败]
+
+                        %% 服务端ACK构造
+                        II[服务端处理完成] --> JJ[构造ACK响应<br />Resp结构]
+                        JJ --> KK[设置相同ReqIdentifier<br />1003]
+                        KK --> LL[设置相同MsgIncr<br />'123'-关键匹配字段-]
+                        LL --> MM[设置相同OperationID<br />用于日志追踪]
+                        MM --> NN[设置ErrCode<br />0=成功, 其他=错误]
+                        NN --> OO[设置响应数据<br />包含ServerMsgID]
+                        OO --> PP[通过WebSocket返回<br />writeBinaryMsg]
+
+                        %% 客户端ACK处理
+                        PP --> QQ[客户端接收响应<br />onMessage事件]
+                        QQ --> RR[根据MsgIncr查找<br />pendingRequests-'123'-]
+                        RR --> SS{找到对应请求?}
+                        SS -->|是| TT[发送到对应channel<br />channel <- response] SS -->|否| UU[丢弃响应<br />可能是过期响应]
+
+                            TT --> J
+
+                            %% 网络状态感知
+                            VV[网络状态监控] --> WW{网络连接状态}
+                            WW -->|断开| XX[暂停发送<br />等待重连]
+                            WW -->|连接| YY[继续发送队列<br />恢复正常发送]
+
+                            XX --> ZZ[WebSocket重连成功]
+                            ZZ --> AAA[重发未确认消息<br />检查pendingRequests]
+                            AAA --> YY
+
+                            %% 样式设置
+                            style B fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+                            style C fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+                            style LL fill:#ffcdd2,stroke:#d32f2f,stroke-width:3px
+                            style DD fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+                            style O fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+                            style Q fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+                            style AA fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+                            style CC fill:#ffecb3,stroke:#ff8f00,stroke-width:2px
+                </div>
+            </div>
+        </div>
+
+        <div class="description">
+            <h3>ACK确认机制核心特性</h3>
+
+            <div class="feature-box">
+                <h4>1. MsgIncr匹配机制</h4>
+                <p><strong>核心作用：</strong>确保请求响应一一对应，避免混乱</p>
+                <div class="code-box">
+                    // 客户端发送
+                    type Req struct {
+                    MsgIncr string `json:"msgIncr"` // "123"
+                    }
+
+                    // 服务端响应
+                    type Resp struct {
+                    MsgIncr string `json:"msgIncr"` // "123" (相同)
+                    }
+                </div>
+            </div>
+
+            <div class="feature-box">
+                <h4>2. 指数退避重试策略</h4>
+                <p><strong>算法：</strong>delay = 2^retry * 1秒 (1s, 2s, 4s, 8s...)</p>
+                <p><strong>目的：</strong>避免网络拥塞，提高重试成功率</p>
+            </div>
+
+            <div class="feature-box">
+                <h4>3. 网络状态感知</h4>
+                <p><strong>监控机制：</strong>实时检测WebSocket连接状态</p>
+                <p><strong>自动恢复：</strong>重连后自动重发未确认消息</p>
+            </div>
+
+            <div class="feature-box">
+                <h4>4. 超时与重试控制</h4>
+                <p><strong>超时时间：</strong>30秒等待ACK响应</p>
+                <p><strong>最大重试：</strong>3次重试后标记发送失败</p>
+                <p><strong>状态管理：</strong>pendingRequests映射管理待确认消息</p>
+            </div>
+
+            <h3>节点颜色说明</h3>
+            <ul>
+                <li><span class="highlight">蓝色节点</span>：消息标识符生成和管理</li>
+                <li><span class="highlight">红色节点</span>：关键匹配字段（MsgIncr）</li>
+                <li><span class="highlight">绿色节点</span>：成功处理流程</li>
+                <li><span class="highlight">紫色节点</span>：指数退避算法</li>
+                <li><span class="highlight">橙色节点</span>：重发和重试机制</li>
+            </ul>
+
+            <h3>可靠性保证</h3>
+            <ul>
+                <li><strong>请求唯一性：</strong>每个请求都有唯一的MsgIncr标识</li>
+                <li><strong>响应匹配：</strong>通过MsgIncr确保响应与请求对应</li>
+                <li><strong>超时处理：</strong>30秒超时机制防止无限等待</li>
+                <li><strong>智能重试：</strong>指数退避算法优化网络使用</li>
+                <li><strong>状态追踪：</strong>完整的消息状态生命周期管理</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let currentZoom = 1;
+        let mermaidContainer = document.getElementById('mermaidContainer');
+
+        // 初始化Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+
+        function zoomIn() {
+            currentZoom = Math.min(currentZoom + 0.2, 3);
+            updateZoom();
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(currentZoom - 0.2, 0.3);
+            updateZoom();
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            updateZoom();
+        }
+
+        function updateZoom() {
+            mermaidContainer.style.transform = `scale(${currentZoom})`;
+            document.getElementById('zoomLevel').textContent = Math.round(currentZoom * 100) + '%';
+        }
+
+        function exportPNG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const data = new XMLSerializer().serializeToString(svg);
+            const img = new Image();
+
+            const svgBlob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            img.onload = function () {
+                canvas.width = img.width * 2;
+                canvas.height = img.height * 2;
+                ctx.scale(2, 2);
+                ctx.drawImage(img, 0, 0);
+
+                canvas.toBlob(function (blob) {
+                    const link = document.createElement('a');
+                    link.download = 'OpenIM ACK确认机制详细流程图.png';
+                    link.href = URL.createObjectURL(blob);
+                    link.click();
+                    URL.revokeObjectURL(url);
+                });
+            };
+
+            img.src = url;
+        }
+
+        function exportSVG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const data = new XMLSerializer().serializeToString(svg);
+            const blob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const link = document.createElement('a');
+            link.download = 'OpenIM ACK确认机制详细流程图.svg';
+            link.href = URL.createObjectURL(blob);
+            link.click();
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // 鼠标滚轮缩放
+        document.getElementById('diagramContainer').addEventListener('wheel', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                    zoomIn();
+                } else {
+                    zoomOut();
+                }
+            }
+        });
+
+        // 键盘快捷键
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                switch (e.key) {
+                    case '=':
+                    case '+':
+                        e.preventDefault();
+                        zoomIn();
+                        break;
+                    case '-':
+                        e.preventDefault();
+                        zoomOut();
+                        break;
+                    case '0':
+                        e.preventDefault();
+                        resetZoom();
+                        break;
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>

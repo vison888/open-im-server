@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MsgTransfer消息传输服务整体流程图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #1e40af;
+            --accent-color: #3b82f6;
+            --success-color: #059669;
+            --warning-color: #d97706;
+            --danger-color: #dc2626;
+            --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --card-bg: rgba(255, 255, 255, 0.95);
+            --border-radius: 12px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            color: #1f2937;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            background: var(--card-bg);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .header h1 {
+            color: var(--primary-color);
+            margin-bottom: 10px;
+            font-size: 2.5rem;
+            font-weight: 700;
+        }
+
+        .header p {
+            color: #6b7280;
+            font-size: 1.1rem;
+            max-width: 800px;
+            margin: 0 auto;
+            line-height: 1.6;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        }
+
+        .btn:hover {
+            background: var(--secondary-color);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.4);
+        }
+
+        .btn.success {
+            background: var(--success-color);
+        }
+
+        .btn.warning {
+            background: var(--warning-color);
+        }
+
+        .status {
+            text-align: center;
+            margin: 15px 0;
+            padding: 12px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            opacity: 0;
+        }
+
+        .status.show {
+            opacity: 1;
+        }
+
+        .status.success {
+            background: rgba(5, 150, 105, 0.1);
+            color: var(--success-color);
+            border: 2px solid rgba(5, 150, 105, 0.2);
+        }
+
+        .status.error {
+            background: rgba(220, 38, 38, 0.1);
+            color: var(--danger-color);
+            border: 2px solid rgba(220, 38, 38, 0.2);
+        }
+
+        .diagram-container {
+            background: var(--card-bg);
+            border-radius: var(--border-radius);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            margin-bottom: 30px;
+            overflow: hidden;
+        }
+
+        .diagram-wrapper {
+            width: 100%;
+            overflow: auto;
+            cursor: grab;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            background: white;
+            position: relative;
+        }
+
+        .diagram-wrapper:active {
+            cursor: grabbing;
+        }
+
+        .diagram-wrapper svg {
+            transition: transform 0.3s ease;
+            max-width: none !important;
+            height: auto !important;
+        }
+
+        .legend {
+            background: var(--card-bg);
+            border-radius: var(--border-radius);
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .legend h3 {
+            color: var(--primary-color);
+            margin-bottom: 20px;
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+
+        .legend-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .legend-section {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid var(--accent-color);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .legend-section h4 {
+            color: var(--secondary-color);
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .color-box {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            margin-right: 10px;
+            border: 1px solid #d1d5db;
+        }
+
+        .keyboard-shortcuts {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .keyboard-shortcuts h4 {
+            color: var(--primary-color);
+            margin-bottom: 10px;
+            font-size: 1rem;
+        }
+
+        .shortcuts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+        }
+
+        .shortcut-item {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: #4b5563;
+        }
+
+        .key {
+            background: #f3f4f6;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .controls {
+                gap: 10px;
+            }
+
+            .btn {
+                padding: 10px 16px;
+                font-size: 13px;
+            }
+
+            .legend-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>MsgTransfer消息传输服务整体流程图</h1>
+            <p>OpenIM核心组件 - 消息转发、缓存、去重和持久化的完整流程展示</p>
+        </div>
+
+        <div class="controls">
+            <button class="btn" onclick="zoomIn()">放大 (+)</button>
+            <button class="btn" onclick="zoomOut()">缩小 (-)</button>
+            <button class="btn" onclick="resetZoom()">重置缩放</button>
+            <button class="btn" onclick="toggleFullscreen()">全屏切换</button>
+            <button class="btn success" onclick="exportPNG()">导出PNG</button>
+            <button class="btn warning" onclick="exportSVG()">导出SVG</button>
+        </div>
+
+        <div class="status" id="status"></div>
+
+        <div class="diagram-container">
+            <div class="diagram-wrapper" id="diagramWrapper">
+                <div class="mermaid" id="mermaid-diagram">
+                    graph TB
+                    %% 客户端层
+                    subgraph "客户端层"
+                    A1[客户端A发送消息]
+                    A2[客户端B发送消息]
+                    A3[本地SQLite去重检查]
+                    end
+
+                    %% WebSocket网关层
+                    subgraph "WebSocket网关层"
+                    B1[WebSocket服务器]
+                    B2[连接管理器]
+                    B3[消息验证器]
+                    end
+
+                    %% Kafka消息队列
+                    subgraph "Kafka消息队列"
+                    C1[ToRedisTopic主题]
+                    C2[ToPushTopic主题]
+                    C3[ToMongoTopic主题]
+                    end
+
+                    %% MsgTransfer核心服务
+                    subgraph "MsgTransfer核心服务"
+                    D1[OnlineHistoryRedisConsumerHandler]
+                    D2[消息批处理器<br />500条/批次, 100ms间隔]
+                    D3[消息分类器]
+                    D4[OnlineHistoryMongoConsumerHandler]
+                    end
+
+                    %% Redis缓存层
+                    subgraph "Redis缓存层"
+                    E1[序号分配器<br />INCRBY原子操作]
+                    E2[消息缓存<br />msg:conversationID:seq]
+                    E3[已读状态缓存]
+                    E4[在线状态缓存]
+                    end
+
+                    %% 消息处理流程
+                    subgraph "消息处理流程"
+                    F1[消息解析]
+                    F2[去重检查]
+                    F3[序号分配]
+                    F4[缓存写入]
+                    F5[分类处理]
+                    F6[转发处理]
+                    end
+
+                    %% Push推送服务
+                    subgraph "Push推送服务"
+                    G1[在线推送处理器]
+                    G2[离线推送处理器]
+                    G3[WebSocket推送]
+                    G4[APNs/FCM推送]
+                    end
+
+                    %% MongoDB持久化
+                    subgraph "MongoDB持久化层"
+                    H1[消息集合]
+                    H2[会话集合]
+                    H3[用户序号集合]
+                    H4[历史消息索引]
+                    end
+
+                    %% 其他微服务
+                    subgraph "其他微服务"
+                    I1[Group服务]
+                    I2[Conversation服务]
+                    I3[User服务]
+                    end
+
+                    %% 监控和日志
+                    subgraph "监控和日志"
+                    J1[Prometheus监控]
+                    J2[日志收集]
+                    J3[性能指标]
+                    end
+
+                    %% 数据流连接
+                    A1 --> B1
+                    A2 --> B1
+                    A3 --> B1
+                    B1 --> B2
+                    B2 --> B3
+                    B3 --> C1
+
+                    C1 --> D1
+                    D1 --> D2
+                    D2 --> F1
+                    F1 --> F2
+                    F2 --> E1
+                    E1 --> F3
+                    F3 --> E2
+                    E2 --> F4
+                    F4 --> D3
+                    D3 --> F5
+                    F5 --> F6
+
+                    %% 转发流程
+                    F6 --> C2
+                    F6 --> C3
+                    C2 --> G1
+                    G1 --> G3
+                    G1 --> G2
+                    G2 --> G4
+
+                    %% 持久化流程
+                    C3 --> D4
+                    D4 --> H1
+                    H1 --> H2
+                    H2 --> H3
+                    H3 --> H4
+
+                    %% 微服务交互
+                    D1 --> I1
+                    D1 --> I2
+                    F5 --> I3
+
+                    %% 监控
+                    D1 --> J1
+                    D4 --> J1
+                    F1 --> J2
+                    E1 --> J3
+
+                    %% 样式设置
+                    classDef clientStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#000
+                    classDef gatewayStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+                    classDef kafkaStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+                    classDef coreStyle fill:#e8f5e8,stroke:#1b5e20,stroke-width:3px,color:#000
+                    classDef redisStyle fill:#ffebee,stroke:#b71c1c,stroke-width:2px,color:#000
+                    classDef processStyle fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px,color:#000
+                    classDef pushStyle fill:#fce4ec,stroke:#880e4f,stroke-width:2px,color:#000
+                    classDef mongoStyle fill:#e0f2f1,stroke:#004d40,stroke-width:2px,color:#000
+                    classDef serviceStyle fill:#fff8e1,stroke:#ff6f00,stroke-width:2px,color:#000
+                    classDef monitorStyle fill:#f1f8e9,stroke:#33691e,stroke-width:2px,color:#000
+
+                    class A1,A2,A3 clientStyle
+                    class B1,B2,B3 gatewayStyle
+                    class C1,C2,C3 kafkaStyle
+                    class D1,D2,D3,D4 coreStyle
+                    class E1,E2,E3,E4 redisStyle
+                    class F1,F2,F3,F4,F5,F6 processStyle
+                    class G1,G2,G3,G4 pushStyle
+                    class H1,H2,H3,H4 mongoStyle
+                    class I1,I2,I3 serviceStyle
+                    class J1,J2,J3 monitorStyle
+                </div>
+            </div>
+        </div>
+
+        <div class="legend">
+            <h3>📊 图例说明与技术要点</h3>
+
+            <div class="legend-grid">
+                <div class="legend-section">
+                    <h4>🎨 颜色图例</h4>
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: #e1f5fe;"></div>
+                        <span>客户端层 - 消息发送源头</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: #f3e5f5;"></div>
+                        <span>WebSocket网关 - 连接管理</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: #fff3e0;"></div>
+                        <span>Kafka队列 - 消息缓冲</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: #e8f5e8;"></div>
+                        <span>MsgTransfer核心 - 主处理逻辑</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: #ffebee;"></div>
+                        <span>Redis缓存 - 高速存储</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="color-box" style="background-color: #e0f2f1;"></div>
+                        <span>MongoDB - 持久化存储</span>
+                    </div>
+                </div>
+
+                <div class="legend-section">
+                    <h4>🔄 核心处理流程</h4>
+                    <div class="legend-item">
+                        <span><strong>1. 消息接收：</strong>WebSocket网关接收客户端消息</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>2. 队列缓冲：</strong>发送到Kafka ToRedisTopic主题</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>3. 批量处理：</strong>500条消息/批次，100ms间隔</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>4. 去重分配：</strong>Redis INCRBY原子操作分配序号</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>5. 缓存存储：</strong>写入Redis，TTL 24小时</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>6. 消息转发：</strong>推送队列 + 持久化队列</span>
+                    </div>
+                </div>
+
+                <div class="legend-section">
+                    <h4>⚡ 性能特点</h4>
+                    <div class="legend-item">
+                        <span><strong>吞吐量：</strong>25万条消息/秒（理论值）</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>延迟：</strong>Redis 1-5ms，端到端 50-200ms</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>并发：</strong>50个工作协程并行处理</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>去重：</strong>Redis原子操作确保消息唯一性</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>缓存：</strong>24小时TTL，平衡性能和成本</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>分片：</strong>按会话ID分片，支持水平扩展</span>
+                    </div>
+                </div>
+
+                <div class="legend-section">
+                    <h4>🎯 关键技术点</h4>
+                    <div class="legend-item">
+                        <span><strong>消息去重：</strong>Redis INCRBY原子操作</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>批处理优化：</strong>减少系统调用，提高吞吐</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>异步处理：</strong>已读状态异步更新</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>分类处理：</strong>存储/非存储，通知/普通</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>监控集成：</strong>Prometheus指标统计</span>
+                    </div>
+                    <div class="legend-item">
+                        <span><strong>故障恢复：</strong>Kafka偏移量管理</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="keyboard-shortcuts">
+                <h4>⌨️ 快捷键操作</h4>
+                <div class="shortcuts-grid">
+                    <div class="shortcut-item">
+                        <span>放大</span>
+                        <span class="key">Ctrl + +</span>
+                    </div>
+                    <div class="shortcut-item">
+                        <span>缩小</span>
+                        <span class="key">Ctrl + -</span>
+                    </div>
+                    <div class="shortcut-item">
+                        <span>重置</span>
+                        <span class="key">Ctrl + 0</span>
+                    </div>
+                    <div class="shortcut-item">
+                        <span>全屏</span>
+                        <span class="key">F11</span>
+                    </div>
+                    <div class="shortcut-item">
+                        <span>拖拽移动</span>
+                        <span class="key">鼠标拖拽</span>
+                    </div>
+                    <div class="shortcut-item">
+                        <span>滚轮缩放</span>
+                        <span class="key">Ctrl + 滚轮</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 全局变量
+        let currentZoom = 1;
+        let isDragging = false;
+        let startX, startY, translateX = 0, translateY = 0;
+
+        // 初始化Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            themeVariables: {
+                fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif',
+                fontSize: '14px',
+                primaryColor: '#e3f2fd',
+                primaryTextColor: '#1a1a1a',
+                primaryBorderColor: '#1976d2',
+                lineColor: '#424242',
+                secondaryColor: '#f5f5f5',
+                tertiaryColor: '#e8f5e8'
+            },
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true,
+                curve: 'basis',
+                padding: 20,
+                nodeSpacing: 50,
+                rankSpacing: 60
+            }
+        });
+
+        // 状态显示函数
+        function showStatus(message, type = 'success') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status show ${type}`;
+
+            setTimeout(() => {
+                status.classList.remove('show');
+            }, 3000);
+        }
+
+        // 缩放功能
+        function zoomIn() {
+            currentZoom = Math.min(currentZoom * 1.2, 3);
+            applyTransform();
+            showStatus('图表已放大');
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(currentZoom * 0.8, 0.3);
+            applyTransform();
+            showStatus('图表已缩小');
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            translateX = 0;
+            translateY = 0;
+            applyTransform();
+            showStatus('缩放已重置');
+        }
+
+        function applyTransform() {
+            const svg = document.querySelector('#mermaid-diagram svg');
+            if (svg) {
+                svg.style.transform = `scale(${currentZoom}) translate(${translateX}px, ${translateY}px)`;
+            }
+        }
+
+        // 拖拽功能
+        function setupDragFunctionality() {
+            const wrapper = document.getElementById('diagramWrapper');
+
+            wrapper.addEventListener('mousedown', startDrag);
+            wrapper.addEventListener('touchstart', startDrag);
+
+            document.addEventListener('mousemove', drag);
+            document.addEventListener('touchmove', drag);
+
+            document.addEventListener('mouseup', endDrag);
+            document.addEventListener('touchend', endDrag);
+        }
+
+        function startDrag(e) {
+            isDragging = true;
+            const event = e.touches ? e.touches[0] : e;
+            startX = event.clientX - translateX;
+            startY = event.clientY - translateY;
+            e.preventDefault();
+        }
+
+        function drag(e) {
+            if (!isDragging) return;
+
+            const event = e.touches ? e.touches[0] : e;
+            translateX = event.clientX - startX;
+            translateY = event.clientY - startY;
+
+            applyTransform();
+            e.preventDefault();
+        }
+
+        function endDrag() {
+            isDragging = false;
+        }
+
+        // 滚轮缩放
+        function setupWheelZoom() {
+            const wrapper = document.getElementById('diagramWrapper');
+
+            wrapper.addEventListener('wheel', (e) => {
+                if (e.ctrlKey) {
+                    e.preventDefault();
+                    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                    currentZoom = Math.max(0.3, Math.min(3, currentZoom * delta));
+                    applyTransform();
+                }
+            });
+        }
+
+        // 全屏功能
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().then(() => {
+                    showStatus('已进入全屏模式');
+                }).catch(() => {
+                    showStatus('全屏模式失败', 'error');
+                });
+            } else {
+                document.exitFullscreen().then(() => {
+                    showStatus('已退出全屏模式');
+                });
+            }
+        }
+
+        // 导出PNG功能
+        async function exportPNG() {
+            try {
+                showStatus('正在生成PNG图片...', 'success');
+
+                // 等待Mermaid渲染完成
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                const svg = document.querySelector('#mermaid-diagram svg');
+                if (!svg) {
+                    throw new Error('未找到SVG元素');
+                }
+
+                // 创建canvas
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+
+                // 获取SVG尺寸
+                const svgRect = svg.getBoundingClientRect();
+                const svgData = new XMLSerializer().serializeToString(svg);
+
+                // 设置canvas尺寸
+                canvas.width = svgRect.width * 2; // 提高分辨率
+                canvas.height = svgRect.height * 2;
+
+                // 创建图片
+                const img = new Image();
+                const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                const url = URL.createObjectURL(svgBlob);
+
+                img.onload = function () {
+                    // 设置白色背景
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    // 绘制SVG到canvas
+                    ctx.scale(2, 2); // 提高分辨率
+                    ctx.drawImage(img, 0, 0);
+
+                    // 导出PNG
+                    canvas.toBlob(function (blob) {
+                        const link = document.createElement('a');
+                        link.download = 'MsgTransfer消息传输服务整体流程图.png';
+                        link.href = URL.createObjectURL(blob);
+                        link.click();
+
+                        // 清理URL
+                        URL.revokeObjectURL(url);
+                        URL.revokeObjectURL(link.href);
+
+                        showStatus('PNG图片导出成功！');
+                    });
+                };
+
+                img.onerror = function () {
+                    throw new Error('图片加载失败');
+                };
+
+                img.src = url;
+
+            } catch (error) {
+                console.error('PNG导出失败:', error);
+                showStatus('PNG导出失败: ' + error.message, 'error');
+            }
+        }
+
+        // 导出SVG功能
+        function exportSVG() {
+            try {
+                showStatus('正在导出SVG...', 'success');
+
+                const svg = document.querySelector('#mermaid-diagram svg');
+                if (!svg) {
+                    throw new Error('未找到SVG元素');
+                }
+
+                const svgData = new XMLSerializer().serializeToString(svg);
+                const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+
+                const link = document.createElement('a');
+                link.download = 'MsgTransfer消息传输服务整体流程图.svg';
+                link.href = URL.createObjectURL(svgBlob);
+                link.click();
+
+                URL.revokeObjectURL(link.href);
+                showStatus('SVG文件导出成功！');
+
+            } catch (error) {
+                console.error('SVG导出失败:', error);
+                showStatus('SVG导出失败: ' + error.message, 'error');
+            }
+        }
+
+        // 键盘快捷键
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey) {
+                switch (e.code) {
+                    case 'Equal':
+                    case 'NumpadAdd':
+                        e.preventDefault();
+                        zoomIn();
+                        break;
+                    case 'Minus':
+                    case 'NumpadSubtract':
+                        e.preventDefault();
+                        zoomOut();
+                        break;
+                    case 'Digit0':
+                    case 'Numpad0':
+                        e.preventDefault();
+                        resetZoom();
+                        break;
+                }
+            } else if (e.code === 'F11') {
+                e.preventDefault();
+                toggleFullscreen();
+            }
+        });
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', function () {
+            // 等待Mermaid渲染完成
+            setTimeout(() => {
+                setupDragFunctionality();
+                setupWheelZoom();
+                showStatus('MsgTransfer流程图加载完成！');
+            }, 1000);
+        });
+
+        // 监听Mermaid渲染完成事件
+        mermaid.mermaidAPI.initialize({
+            startOnLoad: true,
+            callback: function () {
+                console.log('Mermaid渲染完成');
+            }
+        });
+    </script>
+</body>
+
+</html>

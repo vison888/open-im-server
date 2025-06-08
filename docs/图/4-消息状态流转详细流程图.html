@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIM消息状态流转详细流程图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .diagram-container {
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 600px;
+            overflow: auto;
+            background: #ffffff;
+        }
+
+        .mermaid-container {
+            transform-origin: center center;
+            transition: transform 0.3s ease;
+            max-width: 100%;
+            overflow: visible;
+        }
+
+        .description {
+            padding: 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .description h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+
+        .description ul {
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .description li {
+            margin-bottom: 8px;
+        }
+
+        .highlight {
+            background: linear-gradient(120deg, #a8edea 0%, #fed6e3 100%);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+
+        .status-box {
+            background: linear-gradient(135deg, #ffeaa7 0%, #fab1a0 100%);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 4px solid #e17055;
+        }
+
+        .status-box h4 {
+            margin-top: 0;
+            color: #2d3436;
+        }
+
+        .status-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+
+        .status-table th,
+        .status-table td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+
+        .status-table th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .status-table tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .zoom-controls {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>OpenIM消息状态流转详细流程图</h1>
+            <p>展示从MsgStatusSending到MsgStatusSendSuccess的完整状态转换</p>
+        </div>
+
+        <div class="controls">
+            <div class="zoom-controls">
+                <button class="btn zoom-btn" onclick="zoomOut()">-</button>
+                <span id="zoomLevel">100%</span>
+                <button class="btn zoom-btn" onclick="zoomIn()">+</button>
+            </div>
+            <button class="btn" onclick="resetZoom()">重置缩放</button>
+            <button class="btn" onclick="exportPNG()">导出PNG</button>
+            <button class="btn" onclick="exportSVG()">导出SVG</button>
+            <button class="btn" onclick="toggleFullscreen()">全屏查看</button>
+        </div>
+
+        <div class="diagram-container" id="diagramContainer">
+            <div class="mermaid-container" id="mermaidContainer">
+                <div class="mermaid" id="diagram">
+                    stateDiagram-v2
+                    [*] --> Draft: 客户端创建消息
+
+                    Draft --> Sending: 点击发送按钮
+                    note right of Sending: Status = 1<br />MsgStatusSending
+
+                    Sending --> WaitingACK: WebSocket发送到服务器
+                    note right of WaitingACK: 等待服务器ACK响应<br />超时时间：30秒
+
+                    state WaitingACK {
+                    [*] --> Timeout30s
+                    Timeout30s --> RetryCheck: 检查重试次数
+                    RetryCheck --> Retry1: retry < 3 RetryCheck --> Failed: retry >= 3
+
+                        Retry1 --> Delay1s: 第1次重试<br />延迟1秒
+                        Delay1s --> Retry2: 重发消息
+                        Retry2 --> Delay2s: 第2次重试<br />延迟2秒
+                        Delay2s --> Retry3: 重发消息
+                        Retry3 --> Delay4s: 第3次重试<br />延迟4秒
+                        Delay4s --> Failed: 最终失败
+                        }
+
+                        WaitingACK --> Processing: 收到服务器ACK
+                        note right of Processing: ErrCode = 0<br />服务器开始处理
+
+                        Processing --> MsgTransfer: 消息进入Kafka队列
+                        note right of MsgTransfer: ToRedisTopic<br />等待MsgTransfer消费
+
+                        MsgTransfer --> SeqAllocation: MsgTransfer消费处理
+                        note right of SeqAllocation: Redis INCRBY<br />分配唯一序号
+
+                        SeqAllocation --> CacheWrite: 序号分配成功
+                        note right of CacheWrite: 写入Redis缓存<br />设置24小时过期
+
+                        CacheWrite --> SendSuccess: 缓存写入成功
+                        note right of SendSuccess: Status = 2<br />MsgStatusSendSuccess
+
+                        SendSuccess --> PushQueue: 发送到推送队列
+                        note right of PushQueue: toPushTopic<br />准备推送给接收方
+
+                        SendSuccess --> PersistQueue: 发送到持久化队列
+                        note right of PersistQueue: MsgToMongoMQ<br />准备写入MongoDB
+
+                        PushQueue --> Delivered: 推送给在线用户
+                        note right of Delivered: WebSocket推送<br />或离线推送
+
+                        PersistQueue --> Persisted: MongoDB持久化
+                        note right of Persisted: 消息永久保存<br />可供历史查询
+
+                        %% 错误状态流转
+                        WaitingACK --> Failed: 30秒超时未收到ACK
+                        Processing --> Failed: 服务器返回错误<br />ErrCode != 0
+                        MsgTransfer --> Failed: Kafka消费异常
+                        SeqAllocation --> Failed: Redis序号分配失败
+                        CacheWrite --> Failed: Redis缓存写入失败
+
+                        Failed --> [*]: Status = 3<br />MsgStatusSendFailed
+                        Delivered --> [*]: 消息投递完成
+                        Persisted --> [*]: 消息持久化完成
+                </div>
+            </div>
+        </div>
+
+        <div class="description">
+            <h3>消息状态详细说明</h3>
+
+            <table class="status-table">
+                <thead>
+                    <tr>
+                        <th>状态值</th>
+                        <th>状态名称</th>
+                        <th>说明</th>
+                        <th>UI显示</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>0</td>
+                        <td>Draft</td>
+                        <td>消息草稿状态，尚未发送</td>
+                        <td>编辑中</td>
+                    </tr>
+                    <tr>
+                        <td>1</td>
+                        <td>MsgStatusSending</td>
+                        <td>消息正在发送中</td>
+                        <td>发送中图标</td>
+                    </tr>
+                    <tr>
+                        <td>2</td>
+                        <td>MsgStatusSendSuccess</td>
+                        <td>消息发送成功</td>
+                        <td>已发送勾号</td>
+                    </tr>
+                    <tr>
+                        <td>3</td>
+                        <td>MsgStatusSendFailed</td>
+                        <td>消息发送失败</td>
+                        <td>失败感叹号</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="status-box">
+                <h4>关键状态转换点</h4>
+                <p><strong>Draft → Sending：</strong>用户点击发送按钮，消息开始发送流程</p>
+                <p><strong>Sending → WaitingACK：</strong>WebSocket发送完成，等待服务器确认</p>
+                <p><strong>WaitingACK → Processing：</strong>收到服务器ACK，开始服务端处理</p>
+                <p><strong>Processing → SendSuccess：</strong>服务端处理完成，消息成功发送</p>
+            </div>
+
+            <div class="status-box">
+                <h4>重试机制状态</h4>
+                <p><strong>指数退避：</strong>1秒 → 2秒 → 4秒，总共3次重试</p>
+                <p><strong>超时控制：</strong>每次重试都有30秒超时限制</p>
+                <p><strong>失败处理：</strong>3次重试失败后标记为最终失败</p>
+            </div>
+
+            <div class="status-box">
+                <h4>并行处理阶段</h4>
+                <p><strong>推送处理：</strong>消息成功后立即推送给接收方</p>
+                <p><strong>持久化：</strong>同时进行MongoDB持久化存储</p>
+                <p><strong>异步处理：</strong>两个流程并行执行，互不影响</p>
+            </div>
+
+            <h3>状态流转特点</h3>
+            <ul>
+                <li><strong>状态唯一性：</strong>每个消息在任何时刻只有一个确定状态</li>
+                <li><strong>状态持久化：</strong>所有状态变更都会保存到本地数据库</li>
+                <li><strong>UI同步更新：</strong>状态变更实时更新用户界面</li>
+                <li><strong>错误恢复：</strong>网络恢复后可重新尝试发送失败的消息</li>
+                <li><strong>状态追踪：</strong>完整的状态变更日志用于问题诊断</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let currentZoom = 1;
+        let mermaidContainer = document.getElementById('mermaidContainer');
+
+        // 初始化Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            stateDiagram: {
+                useMaxWidth: false
+            }
+        });
+
+        function zoomIn() {
+            currentZoom = Math.min(currentZoom + 0.2, 3);
+            updateZoom();
+        }
+
+        function zoomOut() {
+            currentZoom = Math.max(currentZoom - 0.2, 0.3);
+            updateZoom();
+        }
+
+        function resetZoom() {
+            currentZoom = 1;
+            updateZoom();
+        }
+
+        function updateZoom() {
+            mermaidContainer.style.transform = `scale(${currentZoom})`;
+            document.getElementById('zoomLevel').textContent = Math.round(currentZoom * 100) + '%';
+        }
+
+        function exportPNG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const data = new XMLSerializer().serializeToString(svg);
+            const img = new Image();
+
+            const svgBlob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            img.onload = function () {
+                canvas.width = img.width * 2;
+                canvas.height = img.height * 2;
+                ctx.scale(2, 2);
+                ctx.drawImage(img, 0, 0);
+
+                canvas.toBlob(function (blob) {
+                    const link = document.createElement('a');
+                    link.download = 'OpenIM消息状态流转详细流程图.png';
+                    link.href = URL.createObjectURL(blob);
+                    link.click();
+                    URL.revokeObjectURL(url);
+                });
+            };
+
+            img.src = url;
+        }
+
+        function exportSVG() {
+            const svg = document.querySelector('#diagram svg');
+            if (!svg) {
+                alert('请等待图表加载完成');
+                return;
+            }
+
+            const data = new XMLSerializer().serializeToString(svg);
+            const blob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            const link = document.createElement('a');
+            link.download = 'OpenIM消息状态流转详细流程图.svg';
+            link.href = URL.createObjectURL(blob);
+            link.click();
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // 鼠标滚轮缩放
+        document.getElementById('diagramContainer').addEventListener('wheel', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                    zoomIn();
+                } else {
+                    zoomOut();
+                }
+            }
+        });
+
+        // 键盘快捷键
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey || e.metaKey) {
+                switch (e.key) {
+                    case '=':
+                    case '+':
+                        e.preventDefault();
+                        zoomIn();
+                        break;
+                    case '-':
+                        e.preventDefault();
+                        zoomOut();
+                        break;
+                    case '0':
+                        e.preventDefault();
+                        resetZoom();
+                        break;
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>

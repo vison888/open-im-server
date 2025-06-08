@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package msgtransfer 消息传输服务包
+// 负责处理消息的转发、缓存、持久化等核心功能
+// 主要组件：
+// 1. OnlineHistoryRedisConsumerHandler - 处理消息到Redis缓存和序号分配
+// 2. OnlineHistoryMongoConsumerHandler - 处理消息到MongoDB持久化
 package msgtransfer
 
 import (
@@ -48,40 +53,74 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// MsgTransfer 消息传输服务主结构体
+// 负责协调两个核心消费者处理器的运行
 type MsgTransfer struct {
-	// This consumer aggregated messages, subscribed to the topic:toRedis,
-	//  the message is stored in redis, Incr Redis, and then the message is sent to toPush topic for push,
-	// and the message is sent to toMongo topic for persistence
+	// historyCH Redis消息处理器
+	// 功能：
+	// 1. 消费Kafka ToRedisTopic主题的消息
+	// 2. 批量处理消息并分类（存储/非存储，通知/普通消息）
+	// 3. 使用Redis INCRBY原子操作分配唯一序号（核心去重机制）
+	// 4. 将消息写入Redis缓存（key: msg:conversationID:seq，TTL: 24小时）
+	// 5. 转发消息到推送队列（toPushTopic）和持久化队列（toMongoTopic）
 	historyCH *OnlineHistoryRedisConsumerHandler
-	//This consumer handle message to mongo
+
+	// historyMongoCH MongoDB持久化处理器
+	// 功能：
+	// 1. 消费Kafka ToMongoTopic主题的消息
+	// 2. 批量将消息写入MongoDB进行永久存储
+	// 3. 提供历史消息查询支持
 	historyMongoCH *OnlineHistoryMongoConsumerHandler
-	ctx            context.Context
-	cancel         context.CancelFunc
+
+	// ctx 上下文，用于控制服务生命周期
+	ctx context.Context
+	// cancel 取消函数，用于优雅关闭服务
+	cancel context.CancelFunc
 }
 
+// Config 消息传输服务配置结构体
+// 包含所有必要的配置信息
 type Config struct {
-	MsgTransfer    conf.MsgTransfer
-	RedisConfig    conf.Redis
-	MongodbConfig  conf.Mongo
-	KafkaConfig    conf.Kafka
-	Share          conf.Share
-	WebhooksConfig conf.Webhooks
-	Discovery      conf.Discovery
+	MsgTransfer    conf.MsgTransfer // 消息传输服务特定配置
+	RedisConfig    conf.Redis       // Redis配置（用于消息缓存和序号管理）
+	MongodbConfig  conf.Mongo       // MongoDB配置（用于消息持久化存储）
+	KafkaConfig    conf.Kafka       // Kafka配置（消息队列）
+	Share          conf.Share       // 共享配置（如服务注册名称）
+	WebhooksConfig conf.Webhooks    // Webhook配置
+	Discovery      conf.Discovery   // 服务发现配置
 }
 
+// Start 启动消息传输服务
+// 这是整个MsgTransfer服务的入口函数，负责初始化所有组件并启动服务
+//
+// 参数:
+//   - ctx: 上下文
+//   - index: 服务实例索引（用于多实例部署）
+//   - config: 服务配置
+//
+// 返回值:
+//   - error: 启动过程中的错误
 func Start(ctx context.Context, index int, config *Config) error {
 
 	log.CInfo(ctx, "MSG-TRANSFER server is initializing", "prometheusPorts",
 		config.MsgTransfer.Prometheus.Ports, "index", index)
 
+	// 1. 初始化MongoDB连接
+	// MongoDB用于消息的永久存储，提供历史消息查询功能
 	mgocli, err := mongoutil.NewMongoDB(ctx, config.MongodbConfig.Build())
 	if err != nil {
 		return err
 	}
+
+	// 2. 初始化Redis连接
+	// Redis用于消息缓存、序号管理、在线状态等高频访问数据
 	rdb, err := redisutil.NewRedisClient(ctx, config.RedisConfig.Build())
 	if err != nil {
 		return err
 	}
+
+	// 3. 初始化服务发现客户端
+	// 用于与其他微服务（如group、conversation服务）进行通信
 	client, err := discRegister.NewDiscoveryRegister(&config.Discovery, &config.Share, nil)
 	if err != nil {
 		return err
@@ -89,34 +128,51 @@ func Start(ctx context.Context, index int, config *Config) error {
 	client.AddOption(mw.GrpcClient(), grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(fmt.Sprintf(`{"LoadBalancingPolicy": "%s"}`, "round_robin")))
 
+	// 4. 初始化数据层组件
+	// 4.1 消息文档模型（MongoDB）
 	msgDocModel, err := mgo.NewMsgMongo(mgocli.GetDB())
 	if err != nil {
 		return err
 	}
+	// 4.2 消息缓存模型（Redis + MongoDB）
 	msgModel := redis.NewMsgCache(rdb, msgDocModel)
+
+	// 4.3 会话序号管理（用于消息去重和排序）
 	seqConversation, err := mgo.NewSeqConversationMongo(mgocli.GetDB())
 	if err != nil {
 		return err
 	}
 	seqConversationCache := redis.NewSeqConversationCacheRedis(rdb, seqConversation)
+
+	// 4.4 用户序号管理
 	seqUser, err := mgo.NewSeqUserMongo(mgocli.GetDB())
 	if err != nil {
 		return err
 	}
 	seqUserCache := redis.NewSeqUserCacheRedis(rdb, seqUser)
+
+	// 5. 创建消息传输数据库控制器
+	// 整合所有数据操作，提供统一的数据访问接口
 	msgTransferDatabase, err := controller.NewMsgTransferDatabase(msgDocModel, msgModel, seqUserCache, seqConversationCache, &config.KafkaConfig)
 	if err != nil {
 		return err
 	}
+
+	// 6. 创建Redis消息处理器
+	// 负责处理ToRedisTopic的消息，实现核心的去重和缓存逻辑
 	historyCH, err := NewOnlineHistoryRedisConsumerHandler(ctx, client, config, msgTransferDatabase)
 	if err != nil {
 		return err
 	}
+
+	// 7. 创建MongoDB消息处理器
+	// 负责处理ToMongoTopic的消息，实现消息的持久化存储
 	historyMongoCH, err := NewOnlineHistoryMongoConsumerHandler(&config.KafkaConfig, msgTransferDatabase)
 	if err != nil {
 		return err
 	}
 
+	// 8. 创建MsgTransfer实例并启动服务
 	msgTransfer := &MsgTransfer{
 		historyCH:      historyCH,
 		historyMongoCH: historyMongoCH,
