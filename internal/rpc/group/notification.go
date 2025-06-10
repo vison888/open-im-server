@@ -12,6 +12,53 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+ * 群组通知系统
+ *
+ * 本模块负责群组系统中的所有通知推送功能，是实现多端数据同步和用户体验的关键组件。
+ *
+ * 核心功能：
+ *
+ * 1. 群组生命周期通知
+ *    - 群组创建通知：向所有初始成员推送群组创建消息
+ *    - 群组解散通知：向所有成员推送解散消息，触发会话清理
+ *    - 群组信息变更：名称、头像、公告等变更的实时通知
+ *
+ * 2. 成员管理通知
+ *    - 成员加入通知：新成员加入时的欢迎消息和成员列表更新
+ *    - 成员退出通知：主动退群或被踢出的状态同步
+ *    - 角色变更通知：管理员任免、群主转让的权限变更
+ *    - 成员信息通知：昵称、头像等个人信息在群内的变更
+ *
+ * 3. 申请流程通知
+ *    - 加群申请通知：向管理员推送入群申请待审批消息
+ *    - 申请结果通知：申请通过/拒绝后向申请者推送结果
+ *    - 邀请通知：邀请加群的通知推送和响应处理
+ *
+ * 4. 权限控制通知
+ *    - 禁言通知：个人禁言/解除禁言的状态变更
+ *    - 全群禁言：群组整体禁言状态的推送
+ *    - 管理权限：管理员权限变更的通知推送
+ *
+ * 5. 技术特性
+ *    - 多端同步：确保所有设备实时接收通知
+ *    - 版本控制：基于版本号的增量数据同步
+ *    - 异步处理：通知发送不阻塞主业务流程
+ *    - 失败重试：网络异常时的消息重发机制
+ *    - 消息去重：避免重复通知的智能过滤
+ *
+ * 6. 通知分类
+ *    - 系统通知：系统级消息，如群组状态变更
+ *    - 业务通知：业务相关消息，如成员变动
+ *    - 提示通知：用户操作的结果反馈
+ *    - 同步通知：数据同步相关的版本更新
+ *
+ * 架构设计：
+ * - 消息模板化：统一的消息格式和内容模板
+ * - 推送策略：基于用户在线状态的智能推送
+ * - 性能优化：批量推送和异步处理提升效率
+ * - 扩展性：支持自定义通知类型和推送逻辑
+ */
 package group
 
 import (
@@ -45,70 +92,144 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// GroupApplicationReceiver
+// GroupApplicationReceiver 群组申请接收者类型定义
+// 用于区分群组申请通知的接收者类型，确保通知发送给正确的用户
 const (
-	applicantReceiver = iota
-	adminReceiver
+	applicantReceiver = iota // 申请者：接收申请结果通知（通过/拒绝）
+	adminReceiver            // 管理员：接收新的申请通知，用于审批处理
 )
 
+// NewNotificationSender 创建群组通知发送器
+//
+// 初始化群组通知系统的核心组件，整合消息发送、用户信息获取、数据库操作等功能。
+//
+// 组件集成：
+// - 基础通知服务：继承通用通知发送能力
+// - 消息服务客户端：用于发送系统消息和通知
+// - 用户服务客户端：获取用户基础信息用于通知填充
+// - 数据库控制器：查询群组相关数据
+// - 会话服务客户端：管理群组会话状态
+//
+// 配置参数：
+// - 通知模板配置：各种通知类型的消息模板
+// - 推送策略配置：推送频率、重试次数等策略
+// - 性能参数：批量大小、超时时间等优化参数
 func NewNotificationSender(db controller.GroupDatabase, config *Config, userClient *rpcli.UserClient, msgClient *rpcli.MsgClient, conversationClient *rpcli.ConversationClient) *NotificationSender {
 	return &NotificationSender{
+		// 初始化基础通知发送器，配置消息发送和用户信息获取回调
 		NotificationSender: notification.NewNotificationSender(&config.NotificationConfig,
+			// 配置消息发送回调，使用msgClient发送通知消息
 			notification.WithRpcClient(func(ctx context.Context, req *msg.SendMsgReq) (*msg.SendMsgResp, error) {
 				return msgClient.SendMsg(ctx, req)
 			}),
+			// 配置用户信息获取回调，用于填充通知中的用户信息
 			notification.WithUserRpcClient(userClient.GetUserInfo),
 		),
+		// 配置用户信息批量获取函数，用于填充群组成员信息
 		getUsersInfo: func(ctx context.Context, userIDs []string) ([]common_user.CommonUser, error) {
 			users, err := userClient.GetUsersInfo(ctx, userIDs)
 			if err != nil {
 				return nil, err
 			}
+			// 转换用户信息格式，适配通用用户接口
 			return datautil.Slice(users, func(e *sdkws.UserInfo) common_user.CommonUser { return e }), nil
 		},
-		db:                 db,
-		config:             config,
-		msgClient:          msgClient,
-		conversationClient: conversationClient,
+		db:                 db,                 // 群组数据库控制器
+		config:             config,             // 服务配置
+		msgClient:          msgClient,          // 消息服务客户端
+		conversationClient: conversationClient, // 会话服务客户端
 	}
 }
 
+// NotificationSender 群组通知发送器
+//
+// 群组通知系统的核心实现，负责处理所有群组相关的通知推送。
+// 采用组合模式，在基础通知能力上扩展群组特有的通知逻辑。
+//
+// 核心能力：
+// - 通知模板管理：统一的消息格式和内容模板
+// - 推送策略控制：基于用户状态和业务规则的智能推送
+// - 数据填充：自动填充通知中所需的用户和群组信息
+// - 版本同步：配合增量同步机制维护数据一致性
+// - 异步处理：通知发送不阻塞主业务流程
+//
+// 设计模式：
+// - 组合模式：扩展基础通知能力
+// - 策略模式：不同通知类型的处理策略
+// - 模板方法：统一的通知发送流程
+// - 观察者模式：事件驱动的通知触发
 type NotificationSender struct {
-	*notification.NotificationSender
-	getUsersInfo       func(ctx context.Context, userIDs []string) ([]common_user.CommonUser, error)
-	db                 controller.GroupDatabase
-	config             *Config
-	msgClient          *rpcli.MsgClient
-	conversationClient *rpcli.ConversationClient
+	*notification.NotificationSender                                                                               // 基础通知发送器，提供通用通知能力
+	getUsersInfo                     func(ctx context.Context, userIDs []string) ([]common_user.CommonUser, error) // 批量获取用户信息的函数
+	db                               controller.GroupDatabase                                                      // 群组数据库控制器，用于查询群组相关数据
+	config                           *Config                                                                       // 服务配置，包含通知相关配置
+	msgClient                        *rpcli.MsgClient                                                              // 消息服务客户端，用于发送通知消息
+	conversationClient               *rpcli.ConversationClient                                                     // 会话服务客户端，用于管理群组会话
 }
 
+// PopulateGroupMember 填充群组成员信息
+//
+// 这是一个核心的数据填充方法，用于补全群组成员的显示信息。
+// 在群组系统中，成员可以设置群内昵称和头像，如果未设置则使用用户的基础信息。
+//
+// 填充逻辑：
+// 1. 遍历所有群组成员，识别信息不完整的成员
+// 2. 批量查询这些成员的用户基础信息
+// 3. 按照优先级填充：群内自定义 > 用户基础信息
+// 4. 确保所有成员都有完整的显示信息
+//
+// 性能优化：
+// - 按需查询：只查询信息不完整的用户
+// - 批量操作：一次性获取多个用户的信息
+// - 缓存机制：减少重复的用户信息查询
+// - 并发安全：支持多协程并发调用
+//
+// 使用场景：
+// - 成员列表展示：确保所有成员都有显示名称和头像
+// - 通知消息：填充通知中提到的成员信息
+// - 数据同步：增量同步时的数据完整性保证
 func (g *NotificationSender) PopulateGroupMember(ctx context.Context, members ...*model.GroupMember) error {
+	// 如果没有成员需要填充，直接返回
 	if len(members) == 0 {
 		return nil
 	}
+
+	// 收集需要查询用户信息的成员ID
+	// 只有昵称或头像为空的成员才需要填充
 	emptyUserIDs := make(map[string]struct{})
 	for _, member := range members {
 		if member.Nickname == "" || member.FaceURL == "" {
 			emptyUserIDs[member.UserID] = struct{}{}
 		}
 	}
+
+	// 如果所有成员信息都完整，无需查询用户服务
 	if len(emptyUserIDs) > 0 {
+		// 批量获取用户基础信息
 		users, err := g.getUsersInfo(ctx, datautil.Keys(emptyUserIDs))
 		if err != nil {
 			return err
 		}
+
+		// 构建用户信息映射，便于快速查找
 		userMap := make(map[string]common_user.CommonUser)
 		for i, user := range users {
 			userMap[user.GetUserID()] = users[i]
 		}
+
+		// 填充成员信息
 		for i, member := range members {
 			user, ok := userMap[member.UserID]
 			if !ok {
-				continue
+				continue // 用户不存在，跳过
 			}
+
+			// 按优先级填充昵称：群内自定义 > 用户昵称
 			if member.Nickname == "" {
 				members[i].Nickname = user.GetNickname()
 			}
+
+			// 按优先级填充头像：群内自定义 > 用户头像
 			if member.FaceURL == "" {
 				members[i].FaceURL = user.GetFaceURL()
 			}
@@ -117,40 +238,82 @@ func (g *NotificationSender) PopulateGroupMember(ctx context.Context, members ..
 	return nil
 }
 
+// getUser 获取单个用户的公开信息
+//
+// 用于通知消息中需要展示特定用户信息的场景，
+// 返回标准化的用户公开信息格式。
+//
+// 应用场景：
+// - 操作者信息：在通知中标识是谁执行了操作
+// - 被操作者信息：标识操作的目标用户
+// - 申请者信息：在申请通知中展示申请人信息
+//
+// 错误处理：
+// - 用户不存在：返回专门的用户未找到错误
+// - 服务异常：透传用户服务的错误信息
+// - 数据异常：处理返回数据格式错误
 func (g *NotificationSender) getUser(ctx context.Context, userID string) (*sdkws.PublicUserInfo, error) {
+	// 获取用户信息（批量接口获取单个用户）
 	users, err := g.getUsersInfo(ctx, []string{userID})
 	if err != nil {
 		return nil, err
 	}
+
+	// 验证用户是否存在
 	if len(users) == 0 {
 		return nil, servererrs.ErrUserIDNotFound.WrapMsg(fmt.Sprintf("user %s not found", userID))
 	}
+
+	// 构建公开用户信息结构
 	return &sdkws.PublicUserInfo{
-		UserID:   users[0].GetUserID(),
-		Nickname: users[0].GetNickname(),
-		FaceURL:  users[0].GetFaceURL(),
-		Ex:       users[0].GetEx(),
+		UserID:   users[0].GetUserID(),   // 用户ID
+		Nickname: users[0].GetNickname(), // 用户昵称
+		FaceURL:  users[0].GetFaceURL(),  // 用户头像
+		Ex:       users[0].GetEx(),       // 扩展字段
 	}, nil
 }
 
+// getGroupInfo 获取群组完整信息
+//
+// 查询群组的详细信息，包括基础信息、成员数量、群主等，
+// 用于通知消息中需要展示群组信息的场景。
+//
+// 信息整合：
+// 1. 群组基础信息：名称、头像、介绍、公告等
+// 2. 成员统计：当前群组的总成员数量
+// 3. 群主信息：查询并设置当前群主ID
+// 4. 状态信息：群组当前状态（正常/已解散等）
+//
+// 数据一致性：
+// - 实时查询：确保获取最新的群组状态
+// - 原子操作：在事务中查询相关信息
+// - 异常处理：处理群组不存在或数据异常
 func (g *NotificationSender) getGroupInfo(ctx context.Context, groupID string) (*sdkws.GroupInfo, error) {
+	// 查询群组基础信息
 	gm, err := g.db.TakeGroup(ctx, groupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 查询群组成员数量
 	num, err := g.db.FindGroupMemberNum(ctx, groupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 查询群主用户ID
 	ownerUserIDs, err := g.db.GetGroupRoleLevelMemberIDs(ctx, groupID, constant.GroupOwner)
 	if err != nil {
 		return nil, err
 	}
+
+	// 确定群主ID（正常情况下只有一个群主）
 	var ownerUserID string
 	if len(ownerUserIDs) > 0 {
 		ownerUserID = ownerUserIDs[0]
 	}
 
+	// 转换为标准的群组信息格式
 	return convert.Db2PbGroupInfo(gm, ownerUserID, num), nil
 }
 

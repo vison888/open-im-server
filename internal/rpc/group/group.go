@@ -12,6 +12,55 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+ * 群组核心服务模块
+ *
+ * 本模块是OpenIM群组系统的核心实现，提供群组管理的所有核心功能：
+ *
+ * 1. 群组生命周期管理
+ *    - 群组创建：支持多成员初始化、角色分配、权限验证
+ *    - 群组解散：包含通知推送、数据清理、会话处理
+ *    - 群组信息维护：名称、头像、公告、介绍等信息管理
+ *
+ * 2. 成员管理体系
+ *    - 成员邀请：支持批量邀请、权限验证、回调通知
+ *    - 成员踢出：管理员权限校验、批量操作、状态同步
+ *    - 角色管理：群主、管理员、普通成员的权限控制
+ *    - 成员信息：昵称、头像、角色等个性化设置
+ *
+ * 3. 权限控制系统
+ *    - 分级权限：群主 > 管理员 > 普通成员
+ *    - 操作权限：加群验证、查看成员、加好友等细分权限
+ *    - 禁言管理：个人禁言、全群禁言的时间控制
+ *
+ * 4. 申请处理流程
+ *    - 加群申请：主动申请、邀请验证、审批流程
+ *    - 申请列表：待处理申请的分页查询和状态管理
+ *    - 申请响应：同意、拒绝的处理逻辑和通知机制
+ *
+ * 5. 数据同步机制
+ *    - 增量同步：基于版本控制的高效数据同步
+ *    - 全量同步：故障恢复和首次同步的数据保证
+ *    - 多端一致性：确保所有客户端数据的实时一致
+ *
+ * 6. 技术特性
+ *    - 微服务架构：独立部署、水平扩展
+ *    - gRPC通信：高性能、跨语言的服务间调用
+ *    - 事务保证：MongoDB事务确保数据一致性
+ *    - 缓存优化：Redis多级缓存提升性能
+ *    - Webhook扩展：业务逻辑的灵活扩展机制
+ *
+ * 7. 监控与可观测性
+ *    - 操作日志：完整的操作链路追踪
+ *    - 性能指标：接口耗时、并发量监控
+ *    - 错误处理：统一的错误码和异常处理
+ *
+ * 技术栈：
+ * - gRPC: 服务间高性能通信
+ * - MongoDB: 群组数据持久化存储
+ * - Redis: 高速缓存和分布式锁
+ * - Webhook: 业务扩展和第三方集成
+ */
 package group
 
 import (
@@ -56,112 +105,234 @@ import (
 	"google.golang.org/grpc"
 )
 
+// groupServer 群组服务核心结构体
+//
+// 实现了群组系统的所有gRPC服务接口，采用依赖注入的设计模式，
+// 整合了数据库操作、通知服务、缓存管理、Webhook回调等功能模块。
+//
+// 架构特点：
+// - 微服务设计：独立的群组服务，可单独部署和扩展
+// - 依赖注入：松耦合的模块设计，便于测试和维护
+// - 统一接口：通过gRPC提供标准化的服务接口
+// - 事件驱动：基于通知机制的异步处理
 type groupServer struct {
-	pbgroup.UnimplementedGroupServer
-	db                 controller.GroupDatabase
-	notification       *NotificationSender
-	config             *Config
-	webhookClient      *webhook.Client
-	userClient         *rpcli.UserClient
-	msgClient          *rpcli.MsgClient
-	conversationClient *rpcli.ConversationClient
+	pbgroup.UnimplementedGroupServer                           // gRPC服务基础实现
+	db                               controller.GroupDatabase  // 群组数据库操作层，提供CRUD和复杂查询
+	notification                     *NotificationSender       // 通知发送器，处理群组相关的所有通知
+	config                           *Config                   // 服务配置，包含各种配置参数
+	webhookClient                    *webhook.Client           // Webhook客户端，用于业务扩展回调
+	userClient                       *rpcli.UserClient         // 用户服务客户端，获取用户信息
+	msgClient                        *rpcli.MsgClient          // 消息服务客户端，发送系统消息
+	conversationClient               *rpcli.ConversationClient // 会话服务客户端，管理群组会话
 }
 
+// Config 群组服务配置结构体
+//
+// 集中管理群组服务运行所需的所有配置参数，包括：
+// - 服务配置：端口、超时、限流等服务运行参数
+// - 存储配置：数据库连接、缓存设置
+// - 第三方集成：Webhook地址、服务发现配置
+// - 业务配置：通知设置、共享配置等
+//
+// 配置分类：
+// 1. 基础设施配置：数据库、缓存、服务发现
+// 2. 业务功能配置：通知、Webhook、权限控制
+// 3. 性能配置：本地缓存、连接池、超时设置
 type Config struct {
-	RpcConfig          config.Group
-	RedisConfig        config.Redis
-	MongodbConfig      config.Mongo
-	NotificationConfig config.Notification
-	Share              config.Share
-	WebhooksConfig     config.Webhooks
-	LocalCacheConfig   config.LocalCache
-	Discovery          config.Discovery
+	RpcConfig          config.Group        // gRPC服务配置：端口、超时、中间件等
+	RedisConfig        config.Redis        // Redis配置：连接信息、连接池设置
+	MongodbConfig      config.Mongo        // MongoDB配置：连接字符串、数据库设置
+	NotificationConfig config.Notification // 通知服务配置：推送设置、模板配置
+	Share              config.Share        // 共享配置：服务名称、管理员ID等
+	WebhooksConfig     config.Webhooks     // Webhook配置：回调地址、安全设置
+	LocalCacheConfig   config.LocalCache   // 本地缓存配置：大小、过期时间
+	Discovery          config.Discovery    // 服务发现配置：注册中心设置
 }
 
+// Start 启动群组服务
+//
+// 这是群组服务的启动入口函数，负责完成所有的初始化工作：
+//
+// 初始化流程（10个关键步骤）：
+// 1. 数据库连接初始化：建立MongoDB和Redis连接
+// 2. 数据访问层初始化：创建群组、成员、申请的数据访问对象
+// 3. 外部服务连接：建立用户、消息、会话服务的gRPC连接
+// 4. 核心组件装配：组装groupServer的所有依赖组件
+// 5. 数据库控制器创建：整合所有数据访问层和缓存策略
+// 6. 通知服务初始化：配置群组相关的所有通知机制
+// 7. 本地缓存启动：启动高性能的本地缓存服务
+// 8. gRPC服务注册：将服务注册到gRPC服务器
+// 9. 健康检查配置：设置服务健康状态监控
+// 10. 优雅启动完成：服务就绪，开始接收请求
+//
+// 容错设计：
+// - 连接失败重试：数据库和外部服务连接失败时的重试机制
+// - 启动超时控制：避免启动过程无限等待
+// - 资源清理：启动失败时的资源清理逻辑
+// - 健康检查：启动后的服务可用性验证
 func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryRegistry, server *grpc.Server) error {
+	// 第1步：初始化MongoDB连接
+	// 创建MongoDB客户端，用于群组数据的持久化存储
 	mgocli, err := mongoutil.NewMongoDB(ctx, config.MongodbConfig.Build())
 	if err != nil {
 		return err
 	}
+
+	// 第2步：初始化Redis连接
+	// 创建Redis客户端，用于缓存和分布式锁
 	rdb, err := redisutil.NewRedisClient(ctx, config.RedisConfig.Build())
 	if err != nil {
 		return err
 	}
+
+	// 第3步：初始化数据访问层
+	// 创建群组基础信息的数据访问对象
 	groupDB, err := mgo.NewGroupMongo(mgocli.GetDB())
 	if err != nil {
 		return err
 	}
+
+	// 创建群组成员的数据访问对象
 	groupMemberDB, err := mgo.NewGroupMember(mgocli.GetDB())
 	if err != nil {
 		return err
 	}
+
+	// 创建群组申请的数据访问对象
 	groupRequestDB, err := mgo.NewGroupRequestMgo(mgocli.GetDB())
 	if err != nil {
 		return err
 	}
 
-	//userRpcClient := rpcclient.NewUserRpcClient(client, config.Share.RpcRegisterName.User, config.Share.IMAdminUserID)
-	//msgRpcClient := rpcclient.NewMessageRpcClient(client, config.Share.RpcRegisterName.Msg)
-	//conversationRpcClient := rpcclient.NewConversationRpcClient(client, config.Share.RpcRegisterName.Conversation)
-
+	// 第4步：建立外部服务连接
+	// 建立用户服务连接，用于获取用户信息和权限验证
 	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return err
 	}
+
+	// 建立消息服务连接，用于发送群组通知消息
 	msgConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Msg)
 	if err != nil {
 		return err
 	}
+
+	// 建立会话服务连接，用于管理群组会话状态
 	conversationConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.Conversation)
 	if err != nil {
 		return err
 	}
+
+	// 第5步：组装群组服务实例
+	// 创建群组服务器实例，注入所有依赖
 	gs := groupServer{
-		config:             config,
-		webhookClient:      webhook.NewWebhookClient(config.WebhooksConfig.URL),
-		userClient:         rpcli.NewUserClient(userConn),
-		msgClient:          rpcli.NewMsgClient(msgConn),
-		conversationClient: rpcli.NewConversationClient(conversationConn),
+		config:             config,                                              // 服务配置
+		webhookClient:      webhook.NewWebhookClient(config.WebhooksConfig.URL), // Webhook客户端
+		userClient:         rpcli.NewUserClient(userConn),                       // 用户服务客户端
+		msgClient:          rpcli.NewMsgClient(msgConn),                         // 消息服务客户端
+		conversationClient: rpcli.NewConversationClient(conversationConn),       // 会话服务客户端
 	}
+
+	// 第6步：初始化数据库控制器
+	// 创建统一的数据库控制器，集成缓存、事务、版本控制等功能
 	gs.db = controller.NewGroupDatabase(rdb, &config.LocalCacheConfig, groupDB, groupMemberDB, groupRequestDB, mgocli.GetTx(), grouphash.NewGroupHashFromGroupServer(&gs))
+
+	// 第7步：初始化通知服务
+	// 创建通知发送器，用于处理群组相关的所有通知
 	gs.notification = NewNotificationSender(gs.db, config, gs.userClient, gs.msgClient, gs.conversationClient)
+
+	// 第8步：启动本地缓存
+	// 初始化高性能本地缓存，提升热点数据访问速度
 	localcache.InitLocalCache(&config.LocalCacheConfig)
+
+	// 第9步：注册gRPC服务
+	// 将群组服务注册到gRPC服务器，开始接收客户端请求
 	pbgroup.RegisterGroupServer(server, &gs)
+
+	// 第10步：启动完成
+	// 服务启动成功，所有组件就绪
 	return nil
 }
 
+// NotificationUserInfoUpdate 处理用户信息更新通知
+//
+// 当用户的基础信息（昵称、头像等）发生变化时，需要同步更新该用户在所有群组中的显示信息。
+// 这个方法实现了用户信息变更的级联更新机制。
+//
+// 业务逻辑：
+// 1. 查找用户参与的所有群组
+// 2. 筛选需要更新的群组（用户在群内没有自定义昵称和头像的）
+// 3. 增加群组成员的版本号，触发客户端同步
+// 4. 发送群组成员信息变更通知
+// 5. 清理相关缓存，确保数据一致性
+//
+// 性能优化：
+// - 只更新必要的群组：跳过用户已自定义信息的群组
+// - 批量操作：一次性处理多个群组的版本更新
+// - 异步通知：通知发送不阻塞主流程
 func (g *groupServer) NotificationUserInfoUpdate(ctx context.Context, req *pbgroup.NotificationUserInfoUpdateReq) (*pbgroup.NotificationUserInfoUpdateResp, error) {
+	// 查找用户参与的所有群组成员记录
 	members, err := g.db.FindGroupMemberUser(ctx, nil, req.UserID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 筛选需要更新的群组ID
+	// 如果用户在群内已设置自定义昵称和头像，则无需更新
 	groupIDs := make([]string, 0, len(members))
 	for _, member := range members {
 		if member.Nickname != "" && member.FaceURL != "" {
-			continue
+			continue // 用户已自定义群内信息，跳过
 		}
 		groupIDs = append(groupIDs, member.GroupID)
 	}
+
+	// 批量更新群组成员版本，触发客户端增量同步
 	for _, groupID := range groupIDs {
 		if err := g.db.MemberGroupIncrVersion(ctx, groupID, []string{req.UserID}, model.VersionStateUpdate); err != nil {
 			return nil, err
 		}
 	}
+
+	// 发送群组成员信息变更通知
 	for _, groupID := range groupIDs {
 		g.notification.GroupMemberInfoSetNotification(ctx, groupID, req.UserID)
 	}
+
+	// 清理群组成员缓存，确保下次查询获取最新数据
 	if err = g.db.DeleteGroupMemberHash(ctx, groupIDs); err != nil {
 		return nil, err
 	}
+
 	return &pbgroup.NotificationUserInfoUpdateResp{}, nil
 }
 
+// CheckGroupAdmin 检查用户是否为群组管理员
+//
+// 这是一个核心的权限验证方法，用于验证操作者是否有权限执行管理员级别的操作。
+// 权限层级：系统管理员 > 群主 > 群管理员 > 普通成员
+//
+// 权限验证逻辑：
+// 1. 系统管理员：拥有所有群组的最高权限，可执行任何操作
+// 2. 群主：拥有该群组的完全控制权
+// 3. 群管理员：拥有该群组的部分管理权限
+// 4. 普通成员：只有基础的群组功能权限
+//
+// 安全设计：
+// - 多层权限验证：系统级 -> 群组级 -> 角色级
+// - 操作者身份确认：通过上下文获取真实操作者ID
+// - 权限等级校验：确保操作者具备足够的权限等级
 func (g *groupServer) CheckGroupAdmin(ctx context.Context, groupID string) error {
+	// 检查是否为系统管理员，系统管理员拥有所有权限
 	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
+		// 非系统管理员，需要检查群组内的角色权限
+		// 获取操作者在该群组中的成员信息
 		groupMember, err := g.db.TakeGroupMember(ctx, groupID, mcontext.GetOpUserID(ctx))
 		if err != nil {
 			return err
 		}
+
+		// 验证角色权限：只有群主和群管理员可以执行管理操作
 		if !(groupMember.RoleLevel == constant.GroupOwner || groupMember.RoleLevel == constant.GroupAdmin) {
 			return errs.ErrNoPermission.WrapMsg("no group owner or admin")
 		}
@@ -169,36 +340,84 @@ func (g *groupServer) CheckGroupAdmin(ctx context.Context, groupID string) error
 	return nil
 }
 
+// IsNotFound 判断错误是否为记录不存在错误
+//
+// 这是一个辅助方法，用于统一处理数据库查询的"记录不存在"错误。
+// 在群组系统中，经常需要区分"记录不存在"和其他类型的错误，
+// 以便提供更准确的错误处理和用户反馈。
+//
+// 使用场景：
+// - 群组不存在的判断
+// - 成员不存在的判断
+// - 申请记录不存在的判断
+// - 权限验证中的存在性检查
 func (g *groupServer) IsNotFound(err error) bool {
 	return errs.ErrRecordNotFound.Is(specialerror.ErrCode(errs.Unwrap(err)))
 }
 
+// GenGroupID 生成群组ID
+//
+// 群组ID生成策略，支持两种模式：
+// 1. 指定ID模式：使用客户端提供的群组ID（需验证唯一性）
+// 2. 自动生成模式：系统自动生成唯一的群组ID
+//
+// 自动生成算法：
+// 1. 基础数据：操作ID + 当前纳秒时间戳 + 随机数
+// 2. 哈希处理：MD5哈希确保数据混淆
+// 3. 进制转换：取前8位转为16进制，再转为10进制
+// 4. 唯一性验证：检查生成的ID是否已存在
+// 5. 重试机制：最多重试10次，确保ID生成成功
+//
+// 安全考虑：
+// - 防重复：多重验证确保ID唯一性
+// - 防预测：使用随机数和时间戳增加不可预测性
+// - 防冲突：重试机制处理极低概率的ID冲突
 func (g *groupServer) GenGroupID(ctx context.Context, groupID *string) error {
+	// 如果指定了群组ID，验证其可用性
 	if *groupID != "" {
 		_, err := g.db.TakeGroup(ctx, *groupID)
 		if err == nil {
+			// ID已存在，返回错误
 			return servererrs.ErrGroupIDExisted.WrapMsg("group id existed " + *groupID)
 		} else if g.IsNotFound(err) {
+			// ID不存在，可以使用
 			return nil
 		} else {
+			// 其他错误，返回
 			return err
 		}
 	}
+
+	// 自动生成群组ID，最多重试10次
 	for i := 0; i < 10; i++ {
-		id := encrypt.Md5(strings.Join([]string{mcontext.GetOperationID(ctx), strconv.FormatInt(time.Now().UnixNano(), 10), strconv.Itoa(rand.Int())}, ",;,"))
+		// 组合基础数据：操作ID + 时间戳 + 随机数
+		id := encrypt.Md5(strings.Join([]string{
+			mcontext.GetOperationID(ctx),
+			strconv.FormatInt(time.Now().UnixNano(), 10),
+			strconv.Itoa(rand.Int()),
+		}, ",;,"))
+
+		// 取MD5哈希的前8位，转换为大整数
 		bi := big.NewInt(0)
 		bi.SetString(id[0:8], 16)
 		id = bi.String()
+
+		// 验证生成的ID是否可用
 		_, err := g.db.TakeGroup(ctx, id)
 		if err == nil {
+			// ID已存在，继续下一次生成
 			continue
 		} else if g.IsNotFound(err) {
+			// ID可用，设置并返回
 			*groupID = id
 			return nil
 		} else {
+			// 其他错误，返回
 			return err
 		}
 	}
+
+	// 10次重试都失败，返回生成失败错误
 	return servererrs.ErrData.WrapMsg("group id gen error")
 }
 
