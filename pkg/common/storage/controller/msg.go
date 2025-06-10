@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package controller 消息存储控制器包
+// 提供消息的存储、检索、缓存、搜索等全套功能
+// 支持消息撤回、已读状态管理、消息删除、分片存储等高级特性
+// 实现了MongoDB分片存储和Redis缓存的混合架构
 package controller
 
 import (
@@ -43,19 +47,42 @@ import (
 )
 
 const (
-	updateKeyMsg = iota
-	updateKeyRevoke
+	updateKeyMsg    = iota // 消息更新键，用于标识普通消息更新操作
+	updateKeyRevoke        // 撤回更新键，用于标识消息撤回操作
 )
 
-// CommonMsgDatabase defines the interface for message database operations.
+// CommonMsgDatabase 消息数据库接口
+// 定义了消息存储、检索、管理的所有核心操作
 type CommonMsgDatabase interface {
-	// RevokeMsg revokes a message in a conversation.
+	// RevokeMsg 撤回消息
+	// 在指定会话中撤回特定序列号的消息，支持撤回信息记录
+	// conversationID: 会话ID
+	// seq: 消息序列号
+	// revoke: 撤回信息模型
 	RevokeMsg(ctx context.Context, conversationID string, seq int64, revoke *model.RevokeModel) error
-	// MarkSingleChatMsgsAsRead marks messages as read for a single chat by sequence numbers.
+
+	// MarkSingleChatMsgsAsRead 标记单聊消息已读
+	// 根据序列号列表标记用户在单聊中的消息为已读状态
+	// userID: 用户ID
+	// conversationID: 会话ID
+	// seqs: 消息序列号列表
 	MarkSingleChatMsgsAsRead(ctx context.Context, userID string, conversationID string, seqs []int64) error
-	// GetMsgBySeqsRange retrieves messages from MongoDB by a range of sequence numbers.
+
+	// GetMsgBySeqsRange 按序列号范围获取消息
+	// 从MongoDB中按序列号范围检索消息，支持用户权限过滤
+	// userID: 用户ID
+	// conversationID: 会话ID
+	// begin: 起始序列号
+	// end: 结束序列号
+	// num: 消息数量限制
+	// userMaxSeq: 用户最大可见序列号
 	GetMsgBySeqsRange(ctx context.Context, userID string, conversationID string, begin, end, num, userMaxSeq int64) (minSeq int64, maxSeq int64, seqMsg []*sdkws.MsgData, err error)
-	// GetMsgBySeqs retrieves messages for large groups from MongoDB by sequence numbers.
+
+	// GetMsgBySeqs 按序列号列表获取消息
+	// 从MongoDB中按序列号列表检索大群消息，支持权限过滤
+	// userID: 用户ID
+	// conversationID: 会话ID
+	// seqs: 序列号列表
 	GetMsgBySeqs(ctx context.Context, userID string, conversationID string, seqs []int64) (minSeq int64, maxSeq int64, seqMsg []*sdkws.MsgData, err error)
 
 	GetMessagesBySeqWithBounds(ctx context.Context, userID string, conversationID string, seqs []int64, pullOrder sdkws.PullOrder) (bool, int64, []*sdkws.MsgData, error)
