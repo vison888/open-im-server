@@ -251,20 +251,36 @@ func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryReg
 }
 
 // GetConversation 获取单个会话信息
-// 根据用户ID和会话ID查询会话详细信息
+//
+// 根据用户ID和会话ID查询会话的详细信息。
+// 这是一个基础的查询接口，用于获取特定会话的完整配置和状态。
+//
+// 参数：
+// - req.OwnerUserID: 会话所有者的用户ID
+// - req.ConversationID: 要查询的会话ID
+//
+// 返回：
+// - 会话的完整信息，包括配置、状态、扩展信息等
+//
+// 错误处理：
+// - 如果会话不存在，返回ErrRecordNotFound错误
+// - 如果数据库查询失败，返回相应的数据库错误
 func (c *conversationServer) GetConversation(ctx context.Context, req *pbconversation.GetConversationReq) (*pbconversation.GetConversationResp, error) {
 	// 从数据库查询会话信息
+	// 使用批量查询接口，虽然只查询一个会话，但保持接口一致性
 	conversations, err := c.conversationDatabase.FindConversations(ctx, req.OwnerUserID, []string{req.ConversationID})
 	if err != nil {
 		return nil, err
 	}
 
 	// 检查会话是否存在
+	// 如果查询结果为空，说明会话不存在或用户无权访问
 	if len(conversations) < 1 {
 		return nil, errs.ErrRecordNotFound.WrapMsg("conversation not found")
 	}
 
 	// 构造响应
+	// 将数据库模型转换为protobuf格式
 	resp := &pbconversation.GetConversationResp{Conversation: &pbconversation.Conversation{}}
 	resp.Conversation = convert.ConversationDB2Pb(conversations[0])
 	return resp, nil
@@ -370,21 +386,59 @@ func (c *conversationServer) GetSortedConversationList(ctx context.Context, req 
 }
 
 // GetAllConversations 获取用户的所有会话
-// 返回用户的完整会话列表，不包含消息内容和排序
+//
+// 返回用户的完整会话列表，不包含消息内容和排序。
+// 这是一个简单的会话列表查询接口，主要用于管理端或特殊场景。
+//
+// 与GetSortedConversationList的区别：
+// - 不包含最新消息信息
+// - 不包含未读数统计
+// - 不进行排序处理
+// - 性能更高，适合批量操作
+//
+// 参数：
+// - req.OwnerUserID: 会话所有者的用户ID
+//
+// 返回：
+// - 用户的所有会话基本信息列表
+//
+// 使用场景：
+// - 管理端查询用户会话
+// - 数据导出和备份
+// - 批量会话操作的前置查询
 func (c *conversationServer) GetAllConversations(ctx context.Context, req *pbconversation.GetAllConversationsReq) (*pbconversation.GetAllConversationsResp, error) {
 	// 查询用户的所有会话
+	// 直接从数据库获取，不经过缓存和复杂的业务逻辑处理
 	conversations, err := c.conversationDatabase.GetUserAllConversation(ctx, req.OwnerUserID)
 	if err != nil {
 		return nil, err
 	}
 
 	// 构造响应
+	// 批量转换数据库模型为protobuf格式
 	resp := &pbconversation.GetAllConversationsResp{Conversations: []*pbconversation.Conversation{}}
 	resp.Conversations = convert.ConversationsDB2Pb(conversations)
 	return resp, nil
 }
 
+// GetConversations 批量获取会话信息
+//
+// 根据会话ID列表批量查询会话详细信息。
+// 这是一个高效的批量查询接口，避免多次单独查询的开销。
+//
+// 参数：
+// - req.OwnerUserID: 会话所有者的用户ID
+// - req.ConversationIDs: 要查询的会话ID列表
+//
+// 返回：
+// - 会话信息列表，按查询顺序返回
+//
+// 特点：
+// - 支持批量查询，提高性能
+// - 只返回用户有权访问的会话
+// - 如果某个会话不存在，不会影响其他会话的查询
 func (c *conversationServer) GetConversations(ctx context.Context, req *pbconversation.GetConversationsReq) (*pbconversation.GetConversationsResp, error) {
+	// 调用内部方法进行批量查询
 	conversations, err := c.getConversations(ctx, req.OwnerUserID, req.ConversationIDs)
 	if err != nil {
 		return nil, err
@@ -394,26 +448,76 @@ func (c *conversationServer) GetConversations(ctx context.Context, req *pbconver
 	}, nil
 }
 
+// getConversations 内部方法：批量获取会话信息
+//
+// 这是一个内部辅助方法，被多个公开接口复用。
+// 负责实际的数据库查询和格式转换逻辑。
+//
+// 参数：
+// - ctx: 请求上下文
+// - ownerUserID: 会话所有者的用户ID
+// - conversationIDs: 要查询的会话ID列表
+//
+// 返回：
+// - protobuf格式的会话信息列表
+//
+// 设计目的：
+// - 代码复用，避免重复实现
+// - 统一的数据查询和转换逻辑
+// - 便于维护和测试
 func (c *conversationServer) getConversations(ctx context.Context, ownerUserID string, conversationIDs []string) ([]*pbconversation.Conversation, error) {
+	// 从数据库批量查询会话信息
 	conversations, err := c.conversationDatabase.FindConversations(ctx, ownerUserID, conversationIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 将数据库模型转换为protobuf格式
+	// 注意：这里创建了临时的响应对象，但实际只使用转换结果
 	resp := &pbconversation.GetConversationsResp{Conversations: []*pbconversation.Conversation{}}
 	resp.Conversations = convert.ConversationsDB2Pb(conversations)
 	return convert.ConversationsDB2Pb(conversations), nil
 }
 
+// SetConversation 设置单个会话信息
+//
+// 更新指定会话的配置信息，包括置顶、免打扰、扩展信息等。
+// 这是一个简单的单会话设置接口，适用于单个会话的快速配置。
+//
+// 参数：
+// - req.Conversation: 要设置的会话信息，包含所有需要更新的字段
+//
+// 功能特点：
+// - 支持会话的所有可配置属性
+// - 自动发送变更通知，确保多端同步
+// - 使用事务保证数据一致性
+//
+// 通知机制：
+// - 设置成功后自动发送ConversationChangeNotification
+// - 通知会话所有者，触发客户端数据刷新
+//
+// 使用场景：
+// - 用户手动设置会话属性
+// - 单个会话的快速配置
+// - 简单的会话管理操作
 func (c *conversationServer) SetConversation(ctx context.Context, req *pbconversation.SetConversationReq) (*pbconversation.SetConversationResp, error) {
+	// 将protobuf格式转换为数据库模型
 	var conversation dbModel.Conversation
 	if err := datautil.CopyStructFields(&conversation, req.Conversation); err != nil {
 		return nil, err
 	}
+
+	// 更新会话信息到数据库
+	// 使用批量接口，虽然只更新一个会话，但保持接口一致性
 	err := c.conversationDatabase.SetUserConversations(ctx, req.Conversation.OwnerUserID, []*dbModel.Conversation{&conversation})
 	if err != nil {
 		return nil, err
 	}
+
+	// 发送会话变更通知
+	// 确保多端数据同步，客户端能及时感知到会话状态变化
 	c.conversationNotificationSender.ConversationChangeNotification(ctx, req.Conversation.OwnerUserID, []string{req.Conversation.ConversationID})
+
 	resp := &pbconversation.SetConversationResp{}
 	return resp, nil
 }
@@ -585,34 +689,60 @@ func (c *conversationServer) GetRecvMsgNotNotifyUserIDs(ctx context.Context, req
 }
 
 // create conversation without notification for msg redis transfer.
+// CreateSingleChatConversations 创建单聊会话
+//
+// 这是一个内部方法，用于在消息传输过程中自动创建单聊会话。
+// 当用户首次发送消息时，如果会话不存在，系统会自动调用此方法创建会话。
+//
+// 设计特点：
+// - 不发送通知，避免在消息传输过程中产生额外的通知开销
+// - 支持单聊和通知类型的会话创建
+// - 自动为双方用户创建对应的会话记录
+//
+// 参数：
+// - req.ConversationType: 会话类型（单聊或通知）
+// - req.ConversationID: 会话ID
+// - req.SendID: 发送者用户ID
+// - req.RecvID: 接收者用户ID
+//
+// 会话创建规则：
+// 1. 单聊类型：为发送者和接收者各创建一个会话记录
+// 2. 通知类型：只为接收者创建会话记录
+//
+// 错误处理：
+// - 创建失败时只记录警告日志，不中断流程
+// - 这种设计确保消息发送不会因为会话创建失败而中断
 func (c *conversationServer) CreateSingleChatConversations(ctx context.Context,
 	req *pbconversation.CreateSingleChatConversationsReq,
 ) (*pbconversation.CreateSingleChatConversationsResp, error) {
 	switch req.ConversationType {
 	case constant.SingleChatType:
+		// 为发送者创建会话记录
 		var conversation dbModel.Conversation
 		conversation.ConversationID = req.ConversationID
 		conversation.ConversationType = req.ConversationType
-		conversation.OwnerUserID = req.SendID
-		conversation.UserID = req.RecvID
+		conversation.OwnerUserID = req.SendID // 会话所有者是发送者
+		conversation.UserID = req.RecvID      // 会话对方是接收者
 		err := c.conversationDatabase.CreateConversation(ctx, []*dbModel.Conversation{&conversation})
 		if err != nil {
 			log.ZWarn(ctx, "create conversation failed", err, "conversation", conversation)
 		}
 
+		// 为接收者创建会话记录
 		conversation2 := conversation
-		conversation2.OwnerUserID = req.RecvID
-		conversation2.UserID = req.SendID
+		conversation2.OwnerUserID = req.RecvID // 会话所有者是接收者
+		conversation2.UserID = req.SendID      // 会话对方是发送者
 		err = c.conversationDatabase.CreateConversation(ctx, []*dbModel.Conversation{&conversation2})
 		if err != nil {
 			log.ZWarn(ctx, "create conversation failed", err, "conversation2", conversation)
 		}
 	case constant.NotificationChatType:
+		// 通知类型会话只为接收者创建
 		var conversation dbModel.Conversation
 		conversation.ConversationID = req.ConversationID
 		conversation.ConversationType = req.ConversationType
-		conversation.OwnerUserID = req.RecvID
-		conversation.UserID = req.SendID
+		conversation.OwnerUserID = req.RecvID // 会话所有者是接收者
+		conversation.UserID = req.SendID      // 会话对方是发送者（通常是系统）
 		err := c.conversationDatabase.CreateConversation(ctx, []*dbModel.Conversation{&conversation})
 		if err != nil {
 			log.ZWarn(ctx, "create conversation failed", err, "conversation2", conversation)
@@ -713,105 +843,190 @@ func (c *conversationServer) GetConversationOfflinePushUserIDs(ctx context.Conte
 	return &pbconversation.GetConversationOfflinePushUserIDsResp{UserIDs: datautil.Keys(userIDSet)}, nil
 }
 
+// conversationSort 会话排序处理方法
+//
+// 这是会话列表排序的核心方法，负责将会话按时间倒序排列。
+// 支持置顶会话和普通会话的分别排序，置顶会话始终显示在前面。
+//
+// 排序规则：
+// 1. 置顶会话优先显示
+// 2. 在同一类别内，按最新消息时间倒序排列
+// 3. 时间越新的会话排在越前面
+//
+// 参数：
+// - conversations: 时间戳到会话ID的映射（key: 时间戳, value: 会话ID）
+// - resp: 响应对象，排序结果会追加到其ConversationElems字段
+// - conversation_unreadCount: 会话未读数映射
+// - conversationMsg: 会话消息信息映射
+//
+// 处理流程：
+// 1. 提取所有时间戳并排序
+// 2. 按排序后的时间戳顺序构造会话列表
+// 3. 为每个会话设置未读数
+// 4. 将结果追加到响应对象
+//
+// 设计特点：
+// - 支持增量追加，可以先处理置顶会话，再处理普通会话
+// - 时间复杂度O(n log n)，适合大量会话的排序
+// - 内存友好，避免不必要的数据复制
 func (c *conversationServer) conversationSort(conversations map[int64]string, resp *pbconversation.GetSortedConversationListResp, conversation_unreadCount map[string]int64, conversationMsg map[string]*pbconversation.ConversationElem) {
+	// 提取所有时间戳键值
 	keys := []int64{}
 	for key := range conversations {
 		keys = append(keys, key)
 	}
 
+	// 按时间戳倒序排序（最新的在前面）
 	sort.Slice(keys, func(i, j int) bool {
 		return keys[i] > keys[j]
 	})
+
+	// 初始化索引计数器
 	index := 0
 
+	// 预分配会话元素切片，提高性能
 	cons := make([]*pbconversation.ConversationElem, len(conversations))
+
+	// 按排序后的时间戳顺序构造会话列表
 	for _, v := range keys {
-		conversationID := conversations[v]
-		conversationElem := conversationMsg[conversationID]
-		conversationElem.UnreadCount = conversation_unreadCount[conversationID]
-		cons[index] = conversationElem
+		conversationID := conversations[v]                                      // 获取会话ID
+		conversationElem := conversationMsg[conversationID]                     // 获取会话消息信息
+		conversationElem.UnreadCount = conversation_unreadCount[conversationID] // 设置未读数
+		cons[index] = conversationElem                                          // 添加到结果列表
 		index++
 	}
+
+	// 将排序结果追加到响应对象
+	// 这种设计允许先处理置顶会话，再处理普通会话
 	resp.ConversationElems = append(resp.ConversationElems, cons...)
 }
 
+// getConversationInfo 构造会话信息
+//
+// 这是会话列表构造的核心方法，负责将消息数据转换为会话显示信息。
+// 它会批量获取用户和群组信息，然后构造完整的会话元素。
+//
+// 主要功能：
+// 1. 分析消息数据，提取需要查询的用户ID和群组ID
+// 2. 批量查询用户信息和群组信息
+// 3. 根据会话类型构造不同的显示信息
+// 4. 返回完整的会话元素映射
+//
+// 参数：
+// - ctx: 请求上下文
+// - chatLogs: 会话ID到最新消息的映射
+// - userID: 当前查询的用户ID
+//
+// 返回：
+// - 会话ID到会话元素的映射，包含显示所需的所有信息
+//
+// 性能优化：
+// - 批量查询用户和群组信息，避免N+1查询问题
+// - 使用映射缓存查询结果，避免重复查询
+// - 按会话类型分别处理，提高处理效率
 func (c *conversationServer) getConversationInfo(
 	ctx context.Context,
 	chatLogs map[string]*sdkws.MsgData,
 	userID string) (map[string]*pbconversation.ConversationElem, error) {
 	var (
-		sendIDs         []string
-		groupIDs        []string
-		sendMap         = make(map[string]*sdkws.UserInfo)
-		groupMap        = make(map[string]*sdkws.GroupInfo)
-		conversationMsg = make(map[string]*pbconversation.ConversationElem)
+		sendIDs         []string                                            // 需要查询的用户ID列表
+		groupIDs        []string                                            // 需要查询的群组ID列表
+		sendMap         = make(map[string]*sdkws.UserInfo)                  // 用户ID到用户信息的映射
+		groupMap        = make(map[string]*sdkws.GroupInfo)                 // 群组ID到群组信息的映射
+		conversationMsg = make(map[string]*pbconversation.ConversationElem) // 会话ID到会话元素的映射
 	)
+
+	// 第一步：分析消息数据，收集需要查询的用户ID和群组ID
 	for _, chatLog := range chatLogs {
 		switch chatLog.SessionType {
 		case constant.SingleChatType:
+			// 单聊：需要查询对方用户的信息
 			if chatLog.SendID == userID {
+				// 如果当前用户是发送者，查询接收者信息
 				sendIDs = append(sendIDs, chatLog.RecvID)
 			}
+			// 总是查询发送者信息（用于显示最新消息的发送者）
 			sendIDs = append(sendIDs, chatLog.SendID)
 		case constant.WriteGroupChatType, constant.ReadGroupChatType:
+			// 群聊：需要查询群组信息和发送者信息
 			groupIDs = append(groupIDs, chatLog.GroupID)
 			sendIDs = append(sendIDs, chatLog.SendID)
 		}
 	}
+
+	// 第二步：批量查询用户信息
 	if len(sendIDs) != 0 {
 		sendInfos, err := c.userClient.GetUsersInfo(ctx, sendIDs)
 		if err != nil {
 			return nil, err
 		}
+		// 构建用户ID到用户信息的映射，便于后续快速查找
 		for _, sendInfo := range sendInfos {
 			sendMap[sendInfo.UserID] = sendInfo
 		}
 	}
+
+	// 第三步：批量查询群组信息
 	if len(groupIDs) != 0 {
 		groupInfos, err := c.groupClient.GetGroupsInfo(ctx, groupIDs)
 		if err != nil {
 			return nil, err
 		}
+		// 构建群组ID到群组信息的映射，便于后续快速查找
 		for _, groupInfo := range groupInfos {
 			groupMap[groupInfo.GroupID] = groupInfo
 		}
 	}
+
+	// 第四步：构造会话元素
 	for conversationID, chatLog := range chatLogs {
 		pbchatLog := &pbconversation.ConversationElem{}
 		msgInfo := &pbconversation.MsgInfo{}
+
+		// 复制消息基本信息
 		if err := datautil.CopyStructFields(msgInfo, chatLog); err != nil {
 			return nil, err
 		}
+
+		// 根据会话类型设置不同的显示信息
 		switch chatLog.SessionType {
 		case constant.SingleChatType:
+			// 单聊：显示对方用户的头像和昵称
 			if chatLog.SendID == userID {
+				// 当前用户是发送者，显示接收者信息
 				if recv, ok := sendMap[chatLog.RecvID]; ok {
-					msgInfo.FaceURL = recv.FaceURL
-					msgInfo.SenderName = recv.Nickname
+					msgInfo.FaceURL = recv.FaceURL     // 对方头像
+					msgInfo.SenderName = recv.Nickname // 对方昵称
 				}
 				break
 			}
+			// 当前用户是接收者，显示发送者信息
 			if send, ok := sendMap[chatLog.SendID]; ok {
-				msgInfo.FaceURL = send.FaceURL
-				msgInfo.SenderName = send.Nickname
+				msgInfo.FaceURL = send.FaceURL     // 发送者头像
+				msgInfo.SenderName = send.Nickname // 发送者昵称
 			}
 		case constant.WriteGroupChatType, constant.ReadGroupChatType:
+			// 群聊：显示群组信息和最新消息发送者信息
 			msgInfo.GroupID = chatLog.GroupID
 			if group, ok := groupMap[chatLog.GroupID]; ok {
-				msgInfo.GroupName = group.GroupName
-				msgInfo.GroupFaceURL = group.FaceURL
-				msgInfo.GroupMemberCount = group.MemberCount
-				msgInfo.GroupType = group.GroupType
+				msgInfo.GroupName = group.GroupName          // 群名称
+				msgInfo.GroupFaceURL = group.FaceURL         // 群头像
+				msgInfo.GroupMemberCount = group.MemberCount // 群成员数
+				msgInfo.GroupType = group.GroupType          // 群类型
 			}
+			// 设置最新消息发送者的昵称
 			if send, ok := sendMap[chatLog.SendID]; ok {
 				msgInfo.SenderName = send.Nickname
 			}
 		}
+
+		// 设置会话基本信息
 		pbchatLog.ConversationID = conversationID
-		msgInfo.LatestMsgRecvTime = chatLog.SendTime
+		msgInfo.LatestMsgRecvTime = chatLog.SendTime // 最新消息接收时间
 		pbchatLog.MsgInfo = msgInfo
 		conversationMsg[conversationID] = pbchatLog
 	}
+
 	return conversationMsg, nil
 }
 

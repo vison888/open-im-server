@@ -421,96 +421,151 @@ func (g *groupServer) GenGroupID(ctx context.Context, groupID *string) error {
 	return servererrs.ErrData.WrapMsg("group id gen error")
 }
 
+// CreateGroup 创建群组
+//
+// 这是群组创建的核心方法，实现了完整的群组创建流程：
+// 1. 参数验证：群组类型、群主ID、权限验证
+// 2. 成员处理：去重、用户存在性验证
+// 3. Webhook回调：创建前的业务逻辑扩展
+// 4. 群组数据构建：群组信息、成员信息
+// 5. 数据库操作：事务性创建群组和成员
+// 6. 通知发送：群组创建通知、公告通知
+// 7. Webhook回调：创建后的业务逻辑扩展
+//
+// 业务规则：
+// - 只支持工作群类型
+// - 必须指定群主
+// - 支持同时指定管理员和普通成员
+// - 操作者自动加入群组（如果不在成员列表中）
+// - 成员不能重复
+//
+// 事务保证：
+// - 群组信息和成员信息在同一事务中创建
+// - 创建失败时自动回滚
 func (g *groupServer) CreateGroup(ctx context.Context, req *pbgroup.CreateGroupReq) (*pbgroup.CreateGroupResp, error) {
+	// 验证群组类型，目前只支持工作群
 	if req.GroupInfo.GroupType != constant.WorkingGroup {
 		return nil, errs.ErrArgs.WrapMsg(fmt.Sprintf("group type only supports %d", constant.WorkingGroup))
 	}
+
+	// 验证群主ID不能为空
 	if req.OwnerUserID == "" {
 		return nil, errs.ErrArgs.WrapMsg("no group owner")
 	}
+
+	// 验证操作权限：检查是否有权限指定该用户为群主
 	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
+
+	// 合并所有用户ID：普通成员 + 管理员 + 群主
 	userIDs := append(append(req.MemberUserIDs, req.AdminUserIDs...), req.OwnerUserID)
 	opUserID := mcontext.GetOpUserID(ctx)
+
+	// 如果操作者不在成员列表中，自动添加
 	if !datautil.Contain(opUserID, userIDs...) {
 		userIDs = append(userIDs, opUserID)
 	}
 
+	// 检查用户ID是否有重复
 	if datautil.Duplicate(userIDs) {
 		return nil, errs.ErrArgs.WrapMsg("group member repeated")
 	}
 
+	// 获取所有用户的详细信息
 	userMap, err := g.userClient.GetUsersInfoMap(ctx, userIDs)
 	if err != nil {
 		return nil, err
 	}
 
+	// 验证所有用户都存在
 	if len(userMap) != len(userIDs) {
 		return nil, servererrs.ErrUserIDNotFound.WrapMsg("user not found")
 	}
 
+	// 执行创建群组前的Webhook回调
 	if err := g.webhookBeforeCreateGroup(ctx, &g.config.WebhooksConfig.BeforeCreateGroup, req); err != nil && err != servererrs.ErrCallbackContinue {
 		return nil, err
 	}
 
+	// 初始化群组成员列表
 	var groupMembers []*model.GroupMember
+	// 转换群组信息为数据库模型
 	group := convert.Pb2DBGroupInfo(req.GroupInfo)
+
+	// 生成群组ID（如果未指定则自动生成）
 	if err := g.GenGroupID(ctx, &group.GroupID); err != nil {
 		return nil, err
 	}
 
+	// 定义加入群组的通用函数
 	joinGroupFunc := func(userID string, roleLevel int32) {
 		groupMember := &model.GroupMember{
-			GroupID:        group.GroupID,
-			UserID:         userID,
-			RoleLevel:      roleLevel,
-			OperatorUserID: opUserID,
-			JoinSource:     constant.JoinByInvitation,
-			InviterUserID:  opUserID,
-			JoinTime:       time.Now(),
-			MuteEndTime:    time.UnixMilli(0),
+			GroupID:        group.GroupID,             // 群组ID
+			UserID:         userID,                    // 用户ID
+			RoleLevel:      roleLevel,                 // 角色等级
+			OperatorUserID: opUserID,                  // 操作者ID
+			JoinSource:     constant.JoinByInvitation, // 加入方式：邀请
+			InviterUserID:  opUserID,                  // 邀请者ID
+			JoinTime:       time.Now(),                // 加入时间
+			MuteEndTime:    time.UnixMilli(0),         // 禁言结束时间（初始为0）
 		}
 
 		groupMembers = append(groupMembers, groupMember)
 	}
 
+	// 添加群主
 	joinGroupFunc(req.OwnerUserID, constant.GroupOwner)
 
+	// 添加管理员
 	for _, userID := range req.AdminUserIDs {
 		joinGroupFunc(userID, constant.GroupAdmin)
 	}
 
+	// 添加普通成员
 	for _, userID := range req.MemberUserIDs {
 		joinGroupFunc(userID, constant.GroupOrdinaryUsers)
 	}
 
+	// 执行成员加入群组前的Webhook回调
 	if err := g.webhookBeforeMembersJoinGroup(ctx, &g.config.WebhooksConfig.BeforeMemberJoinGroup, groupMembers, group.GroupID, group.Ex); err != nil && err != servererrs.ErrCallbackContinue {
 		return nil, err
 	}
 
+	// 在数据库中创建群组和成员（事务操作）
 	if err := g.db.CreateGroup(ctx, []*model.Group{group}, groupMembers); err != nil {
 		return nil, err
 	}
+
+	// 构建响应对象
 	resp := &pbgroup.CreateGroupResp{GroupInfo: &sdkws.GroupInfo{}}
 
+	// 填充群组信息
 	resp.GroupInfo = convert.Db2PbGroupInfo(group, req.OwnerUserID, uint32(len(userIDs)))
 	resp.GroupInfo.MemberCount = uint32(len(userIDs))
+
+	// 构建群组创建通知的提示信息
 	tips := &sdkws.GroupCreatedTips{
-		Group:          resp.GroupInfo,
-		OperationTime:  group.CreateTime.UnixMilli(),
-		GroupOwnerUser: g.groupMemberDB2PB(groupMembers[0], userMap[groupMembers[0].UserID].AppMangerLevel),
+		Group:          resp.GroupInfo,                                                                      // 群组信息
+		OperationTime:  group.CreateTime.UnixMilli(),                                                        // 操作时间
+		GroupOwnerUser: g.groupMemberDB2PB(groupMembers[0], userMap[groupMembers[0].UserID].AppMangerLevel), // 群主信息
 	}
+
+	// 填充成员列表和操作者信息
 	for _, member := range groupMembers {
-		member.Nickname = userMap[member.UserID].Nickname
+		member.Nickname = userMap[member.UserID].Nickname // 设置成员昵称
 		tips.MemberList = append(tips.MemberList, g.groupMemberDB2PB(member, userMap[member.UserID].AppMangerLevel))
+		// 找到操作者并设置操作者信息
 		if member.UserID == opUserID {
 			tips.OpUser = g.groupMemberDB2PB(member, userMap[member.UserID].AppMangerLevel)
 			break
 		}
 	}
+
+	// 发送群组创建通知
 	g.notification.GroupCreatedNotification(ctx, tips, req.SendMessage)
 
+	// 如果设置了群公告，发送公告设置通知
 	if req.GroupInfo.Notification != "" {
 		notificationFlag := true
 		g.notification.GroupInfoSetAnnouncementNotification(ctx, &sdkws.GroupInfoSetAnnouncementTips{
@@ -519,6 +574,7 @@ func (g *groupServer) CreateGroup(ctx context.Context, req *pbgroup.CreateGroupR
 		}, &notificationFlag)
 	}
 
+	// 构建创建后回调的请求参数
 	reqCallBackAfter := &pbgroup.CreateGroupReq{
 		MemberUserIDs: userIDs,
 		GroupInfo:     resp.GroupInfo,
@@ -526,73 +582,141 @@ func (g *groupServer) CreateGroup(ctx context.Context, req *pbgroup.CreateGroupR
 		AdminUserIDs:  req.AdminUserIDs,
 	}
 
+	// 执行创建群组后的Webhook回调
 	g.webhookAfterCreateGroup(ctx, &g.config.WebhooksConfig.AfterCreateGroup, reqCallBackAfter)
 
 	return resp, nil
 }
 
+// GetJoinedGroupList 获取用户已加入的群组列表
+//
+// 此方法用于获取指定用户已加入的所有群组信息，支持分页查询。
+// 返回的群组信息包括群组基本信息、成员数量、群主信息等。
+//
+// 业务逻辑：
+// 1. 权限验证：检查是否有权限查询该用户的群组列表
+// 2. 分页查询：获取用户的群组成员记录
+// 3. 数据聚合：获取群组详细信息、成员数量、群主信息
+// 4. 数据转换：将数据库模型转换为API响应格式
+//
+// 性能优化：
+// - 批量查询群组信息，避免N+1查询问题
+// - 使用Map结构快速匹配群主信息
+// - 保持查询结果的顺序一致性
 func (g *groupServer) GetJoinedGroupList(ctx context.Context, req *pbgroup.GetJoinedGroupListReq) (*pbgroup.GetJoinedGroupListResp, error) {
+	// 验证访问权限：检查是否有权限查询该用户的群组列表
 	if err := authverify.CheckAccessV3(ctx, req.FromUserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
+
+	// 分页查询用户加入的群组成员记录
 	total, members, err := g.db.PageGetJoinGroup(ctx, req.FromUserID, req.Pagination)
 	if err != nil {
 		return nil, err
 	}
+
+	// 初始化响应对象
 	var resp pbgroup.GetJoinedGroupListResp
 	resp.Total = uint32(total)
+
+	// 如果没有加入任何群组，直接返回
 	if len(members) == 0 {
 		return &resp, nil
 	}
+
+	// 提取所有群组ID
 	groupIDs := datautil.Slice(members, func(e *model.GroupMember) string {
 		return e.GroupID
 	})
+
+	// 批量查询群组基本信息
 	groups, err := g.db.FindGroup(ctx, groupIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 批量查询每个群组的成员数量
 	groupMemberNum, err := g.db.MapGroupMemberNum(ctx, groupIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 批量查询每个群组的群主信息
 	owners, err := g.db.FindGroupsOwner(ctx, groupIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 填充群组成员的用户信息（昵称、头像等）
 	if err := g.PopulateGroupMember(ctx, members...); err != nil {
 		return nil, err
 	}
+
+	// 构建群主信息的映射表，便于快速查找
 	ownerMap := datautil.SliceToMap(owners, func(e *model.GroupMember) string {
 		return e.GroupID
 	})
+
+	// 按照原始顺序构建群组信息列表，并转换为API响应格式
 	resp.Groups = datautil.Slice(datautil.Order(groupIDs, groups, func(group *model.Group) string {
 		return group.GroupID
 	}), func(group *model.Group) *sdkws.GroupInfo {
+		// 获取群主用户ID
 		var userID string
 		if user := ownerMap[group.GroupID]; user != nil {
 			userID = user.UserID
 		}
+		// 转换数据库模型为API响应格式
 		return convert.Db2PbGroupInfo(group, userID, groupMemberNum[group.GroupID])
 	})
+
 	return &resp, nil
 }
 
+// InviteUserToGroup 邀请用户加入群组
+//
+// 此方法实现了邀请用户加入群组的完整流程，支持两种模式：
+// 1. 直接加入：管理员邀请或群组设置为无需验证
+// 2. 申请模式：普通成员邀请且群组需要验证，生成加群申请
+//
+// 业务逻辑：
+// 1. 参数验证：用户列表非空、无重复、群组存在且未解散
+// 2. 权限检查：验证邀请者的权限级别
+// 3. 用户验证：确认被邀请用户都存在
+// 4. 验证模式判断：根据群组设置和邀请者权限决定处理方式
+// 5. 批量处理：支持大量用户邀请的分批处理
+//
+// 权限规则：
+// - 系统管理员：可直接邀请任何用户
+// - 群主/管理员：可直接邀请用户（无论群组验证设置）
+// - 普通成员：在需要验证的群组中只能发起邀请申请
+//
+// 性能优化：
+// - 批量处理：每批最多50个用户，避免单次操作过大
+// - 事务保证：每批用户的添加在同一事务中完成
 func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.InviteUserToGroupReq) (*pbgroup.InviteUserToGroupResp, error) {
+	// 验证被邀请用户列表不能为空
 	if len(req.InvitedUserIDs) == 0 {
 		return nil, errs.ErrArgs.WrapMsg("user empty")
 	}
+
+	// 验证用户ID不能重复
 	if datautil.Duplicate(req.InvitedUserIDs) {
 		return nil, errs.ErrArgs.WrapMsg("userID duplicate")
 	}
+
+	// 获取群组信息
 	group, err := g.db.TakeGroup(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
 
+	// 检查群组状态，已解散的群组不能邀请新成员
 	if group.Status == constant.GroupStatusDismissed {
 		return nil, servererrs.ErrDismissedAlready.WrapMsg("group dismissed checking group status found it dismissed")
 	}
 
+	// 验证所有被邀请用户都存在
 	userMap, err := g.userClient.GetUsersInfoMap(ctx, req.InvitedUserIDs)
 	if err != nil {
 		return nil, err
@@ -602,43 +726,55 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 		return nil, errs.ErrRecordNotFound.WrapMsg("user not found")
 	}
 
+	// 获取操作者信息和权限
 	var groupMember *model.GroupMember
 	var opUserID string
 	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
+		// 非系统管理员，需要检查在群组中的权限
 		opUserID = mcontext.GetOpUserID(ctx)
 		var err error
 		groupMember, err = g.db.TakeGroupMember(ctx, req.GroupID, opUserID)
 		if err != nil {
 			return nil, err
 		}
+		// 填充群组成员的用户信息
 		if err := g.PopulateGroupMember(ctx, groupMember); err != nil {
 			return nil, err
 		}
 	} else {
+		// 系统管理员直接获取操作者ID
 		opUserID = mcontext.GetOpUserID(ctx)
 	}
 
+	// 执行邀请前的Webhook回调
 	if err := g.webhookBeforeInviteUserToGroup(ctx, &g.config.WebhooksConfig.BeforeInviteUserToGroup, req); err != nil && err != servererrs.ErrCallbackContinue {
 		return nil, err
 	}
 
+	// 检查群组是否需要验证加入
 	if group.NeedVerification == constant.AllNeedVerification {
 		if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
+			// 非系统管理员且群组需要验证，检查是否为群主或管理员
 			if !(groupMember.RoleLevel == constant.GroupOwner || groupMember.RoleLevel == constant.GroupAdmin) {
+				// 普通成员邀请，创建加群申请记录
 				var requests []*model.GroupRequest
 				for _, userID := range req.InvitedUserIDs {
 					requests = append(requests, &model.GroupRequest{
-						UserID:        userID,
-						GroupID:       req.GroupID,
-						JoinSource:    constant.JoinByInvitation,
-						InviterUserID: opUserID,
-						ReqTime:       time.Now(),
-						HandledTime:   time.Unix(0, 0),
+						UserID:        userID,                    // 申请用户ID
+						GroupID:       req.GroupID,               // 群组ID
+						JoinSource:    constant.JoinByInvitation, // 加入方式：邀请
+						InviterUserID: opUserID,                  // 邀请者ID
+						ReqTime:       time.Now(),                // 申请时间
+						HandledTime:   time.Unix(0, 0),           // 处理时间（初始为0）
 					})
 				}
+
+				// 批量创建加群申请
 				if err := g.db.CreateGroupRequest(ctx, requests); err != nil {
 					return nil, err
 				}
+
+				// 为每个申请发送通知
 				for _, request := range requests {
 					g.notification.JoinGroupApplicationNotification(ctx, &pbgroup.JoinGroupReq{
 						GroupID:       request.GroupID,
@@ -652,26 +788,29 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 		}
 	}
 
+	// 直接加入模式：构建群组成员列表
 	var groupMembers []*model.GroupMember
 	for _, userID := range req.InvitedUserIDs {
 		member := &model.GroupMember{
-			GroupID:        req.GroupID,
-			UserID:         userID,
-			RoleLevel:      constant.GroupOrdinaryUsers,
-			OperatorUserID: opUserID,
-			InviterUserID:  opUserID,
-			JoinSource:     constant.JoinByInvitation,
-			JoinTime:       time.Now(),
-			MuteEndTime:    time.UnixMilli(0),
+			GroupID:        req.GroupID,                 // 群组ID
+			UserID:         userID,                      // 用户ID
+			RoleLevel:      constant.GroupOrdinaryUsers, // 角色等级：普通成员
+			OperatorUserID: opUserID,                    // 操作者ID
+			InviterUserID:  opUserID,                    // 邀请者ID
+			JoinSource:     constant.JoinByInvitation,   // 加入方式：邀请
+			JoinTime:       time.Now(),                  // 加入时间
+			MuteEndTime:    time.UnixMilli(0),           // 禁言结束时间（初始为0）
 		}
 
 		groupMembers = append(groupMembers, member)
 	}
 
+	// 执行成员加入前的Webhook回调
 	if err := g.webhookBeforeMembersJoinGroup(ctx, &g.config.WebhooksConfig.BeforeMemberJoinGroup, groupMembers, group.GroupID, group.Ex); err != nil && err != servererrs.ErrCallbackContinue {
 		return nil, err
 	}
 
+	// 分批处理大量用户邀请，每批最多50个用户
 	const singleQuantity = 50
 	for start := 0; start < len(groupMembers); start += singleQuantity {
 		end := start + singleQuantity
@@ -680,14 +819,17 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 		}
 		currentMembers := groupMembers[start:end]
 
+		// 批量添加群组成员
 		if err := g.db.CreateGroup(ctx, nil, currentMembers); err != nil {
 			return nil, err
 		}
 
+		// 提取当前批次的用户ID
 		userIDs := datautil.Slice(currentMembers, func(e *model.GroupMember) string {
 			return e.UserID
 		})
 
+		// 发送成员加入通知
 		if err = g.notification.GroupApplicationAgreeMemberEnterNotification(ctx, req.GroupID, req.SendMessage, opUserID, userIDs...); err != nil {
 			return nil, err
 		}
@@ -695,33 +837,82 @@ func (g *groupServer) InviteUserToGroup(ctx context.Context, req *pbgroup.Invite
 	return &pbgroup.InviteUserToGroupResp{}, nil
 }
 
+// GetGroupAllMember 获取群组所有成员信息
+//
+// 此方法用于获取指定群组的所有成员详细信息，包括成员的基本信息、
+// 群内角色、加入时间、禁言状态等完整信息。
+//
+// 业务逻辑：
+// 1. 查询群组所有成员记录
+// 2. 填充成员的用户基本信息（昵称、头像等）
+// 3. 转换数据格式为API响应格式
+//
+// 注意事项：
+// - 此方法不进行权限验证，调用方需要自行验证权限
+// - 返回完整的成员信息，包括敏感信息如加入时间等
+// - 适用于管理员查看完整成员列表的场景
 func (g *groupServer) GetGroupAllMember(ctx context.Context, req *pbgroup.GetGroupAllMemberReq) (*pbgroup.GetGroupAllMemberResp, error) {
+	// 查询群组的所有成员记录
 	members, err := g.db.FindGroupMemberAll(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 填充成员的用户基本信息（昵称、头像等）
 	if err := g.PopulateGroupMember(ctx, members...); err != nil {
 		return nil, err
 	}
+
+	// 构建响应对象
 	var resp pbgroup.GetGroupAllMemberResp
+	// 将数据库模型转换为API响应格式
 	resp.Members = datautil.Slice(members, func(e *model.GroupMember) *sdkws.GroupMemberFullInfo {
 		return convert.Db2PbGroupMember(e)
 	})
+
 	return &resp, nil
 }
 
+// checkAdminOrInGroup 检查操作者是否为系统管理员或群组成员
+//
+// 这是一个权限验证辅助方法，用于验证操作者是否有权限访问群组信息。
+// 验证规则：
+// 1. 系统管理员：拥有所有群组的访问权限
+// 2. 群组成员：只能访问自己所在群组的信息
+// 3. 非群组成员：无权限访问群组信息
+//
+// 使用场景：
+// - 查看群组成员列表
+// - 获取群组详细信息
+// - 其他需要群组访问权限的操作
+//
+// 参数：
+// - ctx: 上下文，包含操作者信息
+// - groupID: 要验证权限的群组ID
+//
+// 返回：
+// - nil: 有权限访问
+// - error: 无权限访问或其他错误
 func (g *groupServer) checkAdminOrInGroup(ctx context.Context, groupID string) error {
+	// 检查是否为系统管理员，系统管理员拥有所有权限
 	if authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		return nil
 	}
+
+	// 获取操作者用户ID
 	opUserID := mcontext.GetOpUserID(ctx)
+
+	// 查询操作者是否为该群组成员
 	members, err := g.db.FindGroupMembers(ctx, groupID, []string{opUserID})
 	if err != nil {
 		return err
 	}
+
+	// 如果不是群组成员，返回权限错误
 	if len(members) == 0 {
 		return errs.ErrNoPermission.WrapMsg("op user not in group")
 	}
+
 	return nil
 }
 
@@ -751,68 +942,124 @@ func (g *groupServer) GetGroupMemberList(ctx context.Context, req *pbgroup.GetGr
 	}, nil
 }
 
+// KickGroupMember 踢出群组成员
+//
+// 此方法实现了踢出群组成员的完整流程，包括权限验证、数据更新、通知发送等。
+//
+// 业务逻辑：
+// 1. 参数验证：被踢用户列表非空、无重复、不包含操作者和群主
+// 2. 权限验证：根据操作者角色验证是否有权限踢出目标用户
+// 3. 数据库操作：删除群组成员记录
+// 4. 会话处理：设置被踢用户的会话序列号
+// 5. 通知发送：向群组成员发送踢出通知
+// 6. Webhook回调：执行踢出后的业务逻辑扩展
+//
+// 权限规则：
+// - 系统管理员：可踢出任何成员（除群主外）
+// - 群主：可踢出任何成员（除自己外）
+// - 管理员：可踢出普通成员，不能踢出群主和其他管理员
+// - 普通成员：无踢出权限
+//
+// 特殊规则：
+// - 群主不能被踢出
+// - 操作者不能踢出自己
+// - 被踢用户必须是群组成员
 func (g *groupServer) KickGroupMember(ctx context.Context, req *pbgroup.KickGroupMemberReq) (*pbgroup.KickGroupMemberResp, error) {
+	// 获取群组信息
 	group, err := g.db.TakeGroup(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 验证被踢用户列表不能为空
 	if len(req.KickedUserIDs) == 0 {
 		return nil, errs.ErrArgs.WrapMsg("KickedUserIDs empty")
 	}
+
+	// 验证被踢用户ID不能重复
 	if datautil.Duplicate(req.KickedUserIDs) {
 		return nil, errs.ErrArgs.WrapMsg("KickedUserIDs duplicate")
 	}
+
+	// 获取操作者ID
 	opUserID := mcontext.GetOpUserID(ctx)
+
+	// 验证操作者不能踢出自己
 	if datautil.Contain(opUserID, req.KickedUserIDs...) {
 		return nil, errs.ErrArgs.WrapMsg("opUserID in KickedUserIDs")
 	}
+
+	// 获取群主信息
 	owner, err := g.db.TakeGroupOwner(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 验证不能踢出群主
 	if datautil.Contain(owner.UserID, req.KickedUserIDs...) {
 		return nil, errs.ErrArgs.WrapMsg("ownerUID can not Kick")
 	}
 
+	// 获取所有相关成员信息（被踢用户 + 操作者）
 	members, err := g.db.FindGroupMembers(ctx, req.GroupID, append(req.KickedUserIDs, opUserID))
 	if err != nil {
 		return nil, err
 	}
+
+	// 填充成员的用户基本信息
 	if err := g.PopulateGroupMember(ctx, members...); err != nil {
 		return nil, err
 	}
+
+	// 构建成员信息映射表，便于快速查找
 	memberMap := make(map[string]*model.GroupMember)
 	for i, member := range members {
 		memberMap[member.UserID] = members[i]
 	}
+
+	// 检查是否为系统管理员
 	isAppManagerUid := authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID)
 	opMember := memberMap[opUserID]
+
+	// 逐个验证是否有权限踢出每个用户
 	for _, userID := range req.KickedUserIDs {
 		member, ok := memberMap[userID]
 		if !ok {
 			return nil, servererrs.ErrUserIDNotFound.WrapMsg(userID)
 		}
+
+		// 非系统管理员需要进行权限验证
 		if !isAppManagerUid {
 			if opMember == nil {
 				return nil, errs.ErrNoPermission.WrapMsg("opUserID no in group")
 			}
+
+			// 根据操作者角色验证权限
 			switch opMember.RoleLevel {
 			case constant.GroupOwner:
+				// 群主可以踢出任何成员（除自己外，已在前面验证）
 			case constant.GroupAdmin:
+				// 管理员不能踢出群主和其他管理员
 				if member.RoleLevel == constant.GroupOwner || member.RoleLevel == constant.GroupAdmin {
 					return nil, errs.ErrNoPermission.WrapMsg("group admins cannot remove the group owner and other admins")
 				}
 			case constant.GroupOrdinaryUsers:
+				// 普通成员无踢出权限
 				return nil, errs.ErrNoPermission.WrapMsg("opUserID no permission")
 			default:
+				// 未知角色等级
 				return nil, errs.ErrNoPermission.WrapMsg("opUserID roleLevel unknown")
 			}
 		}
 	}
+
+	// 获取当前群组成员数量
 	num, err := g.db.FindGroupMemberNum(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 获取群主用户ID（用于通知）
 	ownerUserIDs, err := g.db.GetGroupRoleLevelMemberIDs(ctx, req.GroupID, constant.GroupOwner)
 	if err != nil {
 		return nil, err
@@ -821,9 +1068,13 @@ func (g *groupServer) KickGroupMember(ctx context.Context, req *pbgroup.KickGrou
 	if len(ownerUserIDs) > 0 {
 		ownerUserID = ownerUserIDs[0]
 	}
+
+	// 执行踢出操作：删除群组成员记录
 	if err := g.db.DeleteGroupMember(ctx, group.GroupID, req.KickedUserIDs); err != nil {
 		return nil, err
 	}
+
+	// 构建踢出通知的提示信息
 	tips := &sdkws.MemberKickedTips{
 		Group: &sdkws.GroupInfo{
 			GroupID:                group.GroupID,
@@ -833,7 +1084,7 @@ func (g *groupServer) KickGroupMember(ctx context.Context, req *pbgroup.KickGrou
 			FaceURL:                group.FaceURL,
 			OwnerUserID:            ownerUserID,
 			CreateTime:             group.CreateTime.UnixMilli(),
-			MemberCount:            num - uint32(len(req.KickedUserIDs)),
+			MemberCount:            num - uint32(len(req.KickedUserIDs)), // 更新后的成员数量
 			Ex:                     group.Ex,
 			Status:                 group.Status,
 			CreatorUserID:          group.CreatorUserID,
@@ -846,16 +1097,26 @@ func (g *groupServer) KickGroupMember(ctx context.Context, req *pbgroup.KickGrou
 		},
 		KickedUserList: []*sdkws.GroupMemberFullInfo{},
 	}
+
+	// 设置操作者信息
 	if opMember, ok := memberMap[opUserID]; ok {
 		tips.OpUser = convert.Db2PbGroupMember(opMember)
 	}
+
+	// 设置被踢用户列表
 	for _, userID := range req.KickedUserIDs {
 		tips.KickedUserList = append(tips.KickedUserList, convert.Db2PbGroupMember(memberMap[userID]))
 	}
+
+	// 发送成员被踢通知
 	g.notification.MemberKickedNotification(ctx, tips, req.SendMessage)
+
+	// 处理被踢用户的会话序列号设置
 	if err := g.deleteMemberAndSetConversationSeq(ctx, req.GroupID, req.KickedUserIDs); err != nil {
 		return nil, err
 	}
+
+	// 执行踢出后的Webhook回调
 	g.webhookAfterKickGroupMember(ctx, &g.config.WebhooksConfig.AfterKickGroupMember, req)
 
 	return &pbgroup.KickGroupMemberResp{}, nil
@@ -880,17 +1141,47 @@ func (g *groupServer) GetGroupMembersInfo(ctx context.Context, req *pbgroup.GetG
 	}, nil
 }
 
+// getGroupMembersInfo 获取群组成员的详细信息
+//
+// 这是一个内部辅助方法，用于获取指定群组中指定用户的完整成员信息，
+// 包括成员的基本信息、群内角色、加入时间、禁言状态等。
+//
+// 业务逻辑：
+// 1. 查询指定用户在群组中的成员记录
+// 2. 填充成员的用户基本信息（昵称、头像等）
+// 3. 转换数据格式为API响应格式
+//
+// 使用场景：
+// - 获取特定成员的详细信息
+// - 批量查询多个成员信息
+// - 成员信息展示和权限验证
+//
+// 参数：
+// - ctx: 上下文
+// - groupID: 群组ID
+// - userIDs: 用户ID列表
+//
+// 返回：
+// - []*sdkws.GroupMemberFullInfo: 群组成员完整信息列表
+// - error: 错误信息
 func (g *groupServer) getGroupMembersInfo(ctx context.Context, groupID string, userIDs []string) ([]*sdkws.GroupMemberFullInfo, error) {
+	// 如果用户ID列表为空，直接返回
 	if len(userIDs) == 0 {
 		return nil, nil
 	}
+
+	// 查询指定用户在群组中的成员记录
 	members, err := g.db.FindGroupMembers(ctx, groupID, userIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 填充成员的用户基本信息（昵称、头像等）
 	if err := g.PopulateGroupMember(ctx, members...); err != nil {
 		return nil, err
 	}
+
+	// 转换数据格式为API响应格式
 	return datautil.Slice(members, func(e *model.GroupMember) *sdkws.GroupMemberFullInfo {
 		return convert.Db2PbGroupMember(e)
 	}), nil
@@ -1007,33 +1298,71 @@ func (g *groupServer) GetGroupApplicationUnhandledCount(ctx context.Context, req
 	}, nil
 }
 
+// getGroupsInfo 获取多个群组的详细信息
+//
+// 这是一个内部辅助方法，用于批量获取群组的完整信息，包括群组基本信息、
+// 成员数量、群主信息等。该方法优化了数据库查询，避免了N+1查询问题。
+//
+// 业务逻辑：
+// 1. 批量查询群组基本信息
+// 2. 批量查询每个群组的成员数量
+// 3. 批量查询每个群组的群主信息
+// 4. 数据聚合和格式转换
+//
+// 性能优化：
+// - 使用批量查询减少数据库访问次数
+// - 使用Map结构快速匹配群主信息
+// - 一次性填充所有需要的用户信息
+//
+// 参数：
+// - ctx: 上下文
+// - groupIDs: 群组ID列表
+//
+// 返回：
+// - []*sdkws.GroupInfo: 群组信息列表
+// - error: 错误信息
 func (g *groupServer) getGroupsInfo(ctx context.Context, groupIDs []string) ([]*sdkws.GroupInfo, error) {
+	// 如果群组ID列表为空，直接返回
 	if len(groupIDs) == 0 {
 		return nil, nil
 	}
+
+	// 批量查询群组基本信息
 	groups, err := g.db.FindGroup(ctx, groupIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 批量查询每个群组的成员数量
 	groupMemberNumMap, err := g.db.MapGroupMemberNum(ctx, groupIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 批量查询每个群组的群主信息
 	owners, err := g.db.FindGroupsOwner(ctx, groupIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 填充群主的用户基本信息
 	if err := g.PopulateGroupMember(ctx, owners...); err != nil {
 		return nil, err
 	}
+
+	// 构建群主信息的映射表，便于快速查找
 	ownerMap := datautil.SliceToMap(owners, func(e *model.GroupMember) string {
 		return e.GroupID
 	})
+
+	// 转换数据格式并返回
 	return datautil.Slice(groups, func(e *model.Group) *sdkws.GroupInfo {
+		// 获取群主用户ID
 		var ownerUserID string
 		if owner, ok := ownerMap[e.GroupID]; ok {
 			ownerUserID = owner.UserID
 		}
+		// 转换数据库模型为API响应格式
 		return convert.Db2PbGroupInfo(e, ownerUserID, groupMemberNumMap[e.GroupID])
 	}), nil
 }
@@ -1117,19 +1446,47 @@ func (g *groupServer) GroupApplicationResponse(ctx context.Context, req *pbgroup
 	return &pbgroup.GroupApplicationResponseResp{}, nil
 }
 
+// JoinGroup 申请加入群组
+//
+// 此方法处理用户主动申请加入群组的请求，支持两种加入模式：
+// 1. 直接加入：群组设置为无需验证，用户直接成为群组成员
+// 2. 申请模式：群组需要验证，创建加群申请等待管理员审批
+//
+// 业务逻辑：
+// 1. 用户信息验证：确认申请用户存在
+// 2. 群组状态检查：确认群组存在且未解散
+// 3. 重复加入检查：确认用户未在群组中
+// 4. Webhook回调：执行申请前的业务逻辑扩展
+// 5. 加入模式判断：根据群组设置决定直接加入或创建申请
+// 6. 通知发送：发送相应的通知消息
+// 7. Webhook回调：执行申请后的业务逻辑扩展
+//
+// 加入模式：
+// - 直接加入（NeedVerification = Directly）：立即成为群组成员
+// - 申请模式（NeedVerification = AllNeedVerification）：创建申请记录
+//
+// 特殊处理：
+// - 已在群组中的用户不能重复申请
+// - 已解散的群组不能申请加入
 func (g *groupServer) JoinGroup(ctx context.Context, req *pbgroup.JoinGroupReq) (*pbgroup.JoinGroupResp, error) {
+	// 获取申请用户的详细信息
 	user, err := g.userClient.GetUserInfo(ctx, req.InviterUserID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 获取群组信息
 	group, err := g.db.TakeGroup(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 检查群组状态，已解散的群组不能申请加入
 	if group.Status == constant.GroupStatusDismissed {
 		return nil, servererrs.ErrDismissedAlready.Wrap()
 	}
 
+	// 构建申请加群前的回调请求参数
 	reqCall := &callbackstruct.CallbackJoinGroupReq{
 		GroupID:    req.GroupID,
 		GroupType:  string(group.GroupType),
@@ -1138,97 +1495,184 @@ func (g *groupServer) JoinGroup(ctx context.Context, req *pbgroup.JoinGroupReq) 
 		Ex:         req.Ex,
 	}
 
+	// 执行申请加群前的Webhook回调
 	if err := g.webhookBeforeApplyJoinGroup(ctx, &g.config.WebhooksConfig.BeforeApplyJoinGroup, reqCall); err != nil && err != servererrs.ErrCallbackContinue {
 		return nil, err
 	}
 
+	// 检查用户是否已经在群组中
 	_, err = g.db.TakeGroupMember(ctx, req.GroupID, req.InviterUserID)
 	if err == nil {
+		// 用户已在群组中，返回参数错误
 		return nil, errs.ErrArgs.Wrap()
 	} else if !g.IsNotFound(err) && errs.Unwrap(err) != errs.ErrRecordNotFound {
+		// 其他数据库错误
 		return nil, err
 	}
+
+	// 记录调试信息
 	log.ZDebug(ctx, "JoinGroup.groupInfo", "group", group, "eq", group.NeedVerification == constant.Directly)
+
+	// 判断群组加入模式
 	if group.NeedVerification == constant.Directly {
+		// 直接加入模式：无需验证，立即成为群组成员
 		groupMember := &model.GroupMember{
-			GroupID:        group.GroupID,
-			UserID:         user.UserID,
-			RoleLevel:      constant.GroupOrdinaryUsers,
-			OperatorUserID: mcontext.GetOpUserID(ctx),
-			InviterUserID:  req.InviterUserID,
-			JoinTime:       time.Now(),
-			MuteEndTime:    time.UnixMilli(0),
+			GroupID:        group.GroupID,               // 群组ID
+			UserID:         user.UserID,                 // 用户ID
+			RoleLevel:      constant.GroupOrdinaryUsers, // 角色等级：普通成员
+			OperatorUserID: mcontext.GetOpUserID(ctx),   // 操作者ID
+			InviterUserID:  req.InviterUserID,           // 邀请者ID（这里是申请者自己）
+			JoinTime:       time.Now(),                  // 加入时间
+			MuteEndTime:    time.UnixMilli(0),           // 禁言结束时间（初始为0）
 		}
 
+		// 执行成员加入前的Webhook回调
 		if err := g.webhookBeforeMembersJoinGroup(ctx, &g.config.WebhooksConfig.BeforeMemberJoinGroup, []*model.GroupMember{groupMember}, group.GroupID, group.Ex); err != nil && err != servererrs.ErrCallbackContinue {
 			return nil, err
 		}
 
+		// 将用户添加到群组中
 		if err := g.db.CreateGroup(ctx, nil, []*model.GroupMember{groupMember}); err != nil {
 			return nil, err
 		}
 
+		// 发送成员加入通知
 		if err = g.notification.MemberEnterNotification(ctx, req.GroupID, req.InviterUserID); err != nil {
 			return nil, err
 		}
+
+		// 执行加入群组后的Webhook回调
 		g.webhookAfterJoinGroup(ctx, &g.config.WebhooksConfig.AfterJoinGroup, req)
 
 		return &pbgroup.JoinGroupResp{}, nil
 	}
 
+	// 申请模式：需要验证，创建加群申请记录
 	groupRequest := model.GroupRequest{
-		UserID:      req.InviterUserID,
-		ReqMsg:      req.ReqMessage,
-		GroupID:     req.GroupID,
-		JoinSource:  req.JoinSource,
-		ReqTime:     time.Now(),
-		HandledTime: time.Unix(0, 0),
-		Ex:          req.Ex,
+		UserID:      req.InviterUserID, // 申请用户ID
+		ReqMsg:      req.ReqMessage,    // 申请消息
+		GroupID:     req.GroupID,       // 群组ID
+		JoinSource:  req.JoinSource,    // 加入来源
+		ReqTime:     time.Now(),        // 申请时间
+		HandledTime: time.Unix(0, 0),   // 处理时间（初始为0）
+		Ex:          req.Ex,            // 扩展字段
 	}
+
+	// 创建加群申请记录
 	if err = g.db.CreateGroupRequest(ctx, []*model.GroupRequest{&groupRequest}); err != nil {
 		return nil, err
 	}
+
+	// 发送加群申请通知
 	g.notification.JoinGroupApplicationNotification(ctx, req, &groupRequest)
+
 	return &pbgroup.JoinGroupResp{}, nil
 }
 
+// QuitGroup 退出群组
+//
+// 此方法处理用户主动退出群组的请求，包括权限验证、数据更新、通知发送等。
+//
+// 业务逻辑：
+// 1. 用户身份确认：确定退出的用户ID（可以是自己或管理员代操作）
+// 2. 权限验证：检查操作权限和退出权限
+// 3. 成员信息获取：获取要退出用户的群组成员信息
+// 4. 特殊角色检查：群主不能退出群组
+// 5. 数据库操作：删除群组成员记录
+// 6. 会话处理：设置用户的会话序列号
+// 7. 通知发送：向群组成员发送退出通知
+// 8. Webhook回调：执行退出后的业务逻辑扩展
+//
+// 权限规则：
+// - 用户可以退出自己加入的群组
+// - 系统管理员可以代替任何用户退出群组
+// - 群主不能退出群组（需要先转让群主身份）
+//
+// 特殊处理：
+// - 退出后用户不能看到退出后的群组消息
+// - 退出操作不可撤销
 func (g *groupServer) QuitGroup(ctx context.Context, req *pbgroup.QuitGroupReq) (*pbgroup.QuitGroupResp, error) {
+	// 确定退出的用户ID
 	if req.UserID == "" {
+		// 如果未指定用户ID，则为操作者自己退出
 		req.UserID = mcontext.GetOpUserID(ctx)
 	} else {
+		// 如果指定了用户ID，需要验证是否有权限代替该用户退出
 		if err := authverify.CheckAccessV3(ctx, req.UserID, g.config.Share.IMAdminUserID); err != nil {
 			return nil, err
 		}
 	}
+
+	// 获取要退出用户的群组成员信息
 	member, err := g.db.TakeGroupMember(ctx, req.GroupID, req.UserID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 检查群主不能退出群组
 	if member.RoleLevel == constant.GroupOwner {
 		return nil, errs.ErrNoPermission.WrapMsg("group owner can't quit")
 	}
+
+	// 填充成员的用户基本信息
 	if err := g.PopulateGroupMember(ctx, member); err != nil {
 		return nil, err
 	}
+
+	// 从群组中删除该成员
 	err = g.db.DeleteGroupMember(ctx, req.GroupID, []string{req.UserID})
 	if err != nil {
 		return nil, err
 	}
+
+	// 发送成员退出通知
 	g.notification.MemberQuitNotification(ctx, g.groupMemberDB2PB(member, 0))
+
+	// 设置用户的会话序列号，确保退出后不能看到后续消息
 	if err := g.deleteMemberAndSetConversationSeq(ctx, req.GroupID, []string{req.UserID}); err != nil {
 		return nil, err
 	}
+
+	// 执行退出群组后的Webhook回调
 	g.webhookAfterQuitGroup(ctx, &g.config.WebhooksConfig.AfterQuitGroup, req)
 
 	return &pbgroup.QuitGroupResp{}, nil
 }
 
+// deleteMemberAndSetConversationSeq 删除成员并设置会话序列号
+//
+// 当用户被踢出或主动退出群组时，需要设置该用户的群组会话序列号，
+// 确保用户在重新加入群组时不会看到离开期间的历史消息。
+//
+// 业务逻辑：
+// 1. 构建群组会话ID
+// 2. 获取当前群组会话的最大序列号
+// 3. 为指定用户设置会话序列号为当前最大值
+//
+// 作用：
+// - 保护隐私：用户离开群组后不能看到离开期间的消息
+// - 数据一致性：确保会话序列号的正确性
+// - 重新加入：用户重新加入时从正确的序列号开始接收消息
+//
+// 参数：
+// - ctx: 上下文
+// - groupID: 群组ID
+// - userIDs: 需要设置序列号的用户ID列表
+//
+// 返回：
+// - error: 操作错误，nil表示成功
 func (g *groupServer) deleteMemberAndSetConversationSeq(ctx context.Context, groupID string, userIDs []string) error {
+	// 构建群组会话ID
 	conversationID := msgprocessor.GetConversationIDBySessionType(constant.ReadGroupChatType, groupID)
+
+	// 获取当前群组会话的最大序列号
 	maxSeq, err := g.msgClient.GetConversationMaxSeq(ctx, conversationID)
 	if err != nil {
 		return err
 	}
+
+	// 为指定用户设置会话序列号为当前最大值
+	// 这样用户重新加入时不会看到离开期间的历史消息
 	return g.conversationClient.SetConversationMaxSeq(ctx, conversationID, userIDs, maxSeq)
 }
 
@@ -1621,54 +2065,104 @@ func (g *groupServer) GetUserReqApplicationList(ctx context.Context, req *pbgrou
 	}, nil
 }
 
+// DismissGroup 解散群组
+//
+// 此方法处理群组解散的请求，包括权限验证、数据处理、通知发送等。
+// 解散群组是一个不可逆的操作，会影响所有群组成员。
+//
+// 业务逻辑：
+// 1. 权限验证：只有群主或系统管理员可以解散群组
+// 2. 群组状态检查：避免重复解散已解散的群组
+// 3. 数据库操作：标记群组为已解散状态或删除相关数据
+// 4. 通知发送：向所有群组成员发送解散通知（可选）
+// 5. Webhook回调：执行解散后的业务逻辑扩展
+//
+// 解散模式：
+// - 保留模式（DeleteMember=false）：保留群组和成员数据，仅标记为已解散
+// - 删除模式（DeleteMember=true）：完全删除群组和成员数据
+//
+// 权限规则：
+// - 群主：可以解散自己创建或拥有的群组
+// - 系统管理员：可以解散任何群组
+// - 其他成员：无解散权限
+//
+// 特殊处理：
+// - 解散后群组不能再进行任何操作
+// - 解散通知会发送给所有成员
+// - 解散操作不可撤销
 func (g *groupServer) DismissGroup(ctx context.Context, req *pbgroup.DismissGroupReq) (*pbgroup.DismissGroupResp, error) {
+	// 获取群主信息
 	owner, err := g.db.TakeGroupOwner(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 权限验证：只有群主或系统管理员可以解散群组
 	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
 		if owner.UserID != mcontext.GetOpUserID(ctx) {
 			return nil, errs.ErrNoPermission.WrapMsg("not group owner")
 		}
 	}
+
+	// 填充群主的用户基本信息
 	if err := g.PopulateGroupMember(ctx, owner); err != nil {
 		return nil, err
 	}
+
+	// 获取群组信息
 	group, err := g.db.TakeGroup(ctx, req.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 检查群组状态：在保留模式下，避免重复解散已解散的群组
 	if !req.DeleteMember && group.Status == constant.GroupStatusDismissed {
 		return nil, servererrs.ErrDismissedAlready.WrapMsg("group status is dismissed")
 	}
+
+	// 执行群组解散操作
 	if err := g.db.DismissGroup(ctx, req.GroupID, req.DeleteMember); err != nil {
 		return nil, err
 	}
+
+	// 在保留模式下发送解散通知
 	if !req.DeleteMember {
+		// 获取当前群组成员数量
 		num, err := g.db.FindGroupMemberNum(ctx, req.GroupID)
 		if err != nil {
 			return nil, err
 		}
+
+		// 构建群组解散通知的提示信息
 		tips := &sdkws.GroupDismissedTips{
-			Group:  g.groupDB2PB(group, owner.UserID, num),
-			OpUser: &sdkws.GroupMemberFullInfo{},
+			Group:  g.groupDB2PB(group, owner.UserID, num), // 群组信息
+			OpUser: &sdkws.GroupMemberFullInfo{},           // 操作者信息
 		}
+
+		// 设置操作者信息（如果操作者是群主）
 		if mcontext.GetOpUserID(ctx) == owner.UserID {
 			tips.OpUser = g.groupMemberDB2PB(owner, 0)
 		}
+
+		// 发送群组解散通知
 		g.notification.GroupDismissedNotification(ctx, tips, req.SendMessage)
 	}
+
+	// 获取所有群组成员ID（用于Webhook回调）
 	membersID, err := g.db.FindGroupMemberUserID(ctx, group.GroupID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 构建解散群组后的回调请求参数
 	cbReq := &callbackstruct.CallbackDisMissGroupReq{
-		GroupID:   req.GroupID,
-		OwnerID:   owner.UserID,
-		MembersID: membersID,
-		GroupType: string(group.GroupType),
+		GroupID:   req.GroupID,             // 群组ID
+		OwnerID:   owner.UserID,            // 群主ID
+		MembersID: membersID,               // 所有成员ID列表
+		GroupType: string(group.GroupType), // 群组类型
 	}
 
+	// 执行解散群组后的Webhook回调
 	g.webhookAfterDismissGroup(ctx, &g.config.WebhooksConfig.AfterDismissGroup, cbReq)
 
 	return &pbgroup.DismissGroupResp{}, nil

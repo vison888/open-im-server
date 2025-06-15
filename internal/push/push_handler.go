@@ -1,3 +1,5 @@
+// Package push 实现OpenIM的消息推送处理器
+// 负责处理来自消息传输服务的推送请求，包括在线推送和离线推送
 package push
 
 import (
@@ -33,22 +35,37 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ConsumerHandler 消息推送处理器
+// 负责消费来自Kafka的推送消息，执行在线推送和离线推送
 type ConsumerHandler struct {
-	pushConsumerGroup      *kafka.MConsumerGroup
-	offlinePusher          offlinepush.OfflinePusher
-	onlinePusher           OnlinePusher
-	pushDatabase           controller.PushDatabase
-	onlineCache            *rpccache.OnlineCache
-	groupLocalCache        *rpccache.GroupLocalCache
-	conversationLocalCache *rpccache.ConversationLocalCache
-	webhookClient          *webhook.Client
-	config                 *Config
-	userClient             *rpcli.UserClient
-	groupClient            *rpcli.GroupClient
-	msgClient              *rpcli.MsgClient
-	conversationClient     *rpcli.ConversationClient
+	pushConsumerGroup      *kafka.MConsumerGroup            // Kafka消费者组，用于接收推送消息
+	offlinePusher          offlinepush.OfflinePusher        // 离线推送器接口
+	onlinePusher           OnlinePusher                     // 在线推送器接口
+	pushDatabase           controller.PushDatabase          // 推送数据库控制器
+	onlineCache            *rpccache.OnlineCache            // 在线用户缓存
+	groupLocalCache        *rpccache.GroupLocalCache        // 群组本地缓存
+	conversationLocalCache *rpccache.ConversationLocalCache // 会话本地缓存
+	webhookClient          *webhook.Client                  // Webhook客户端
+	config                 *Config                          // 推送服务配置
+	userClient             *rpcli.UserClient                // 用户服务RPC客户端
+	groupClient            *rpcli.GroupClient               // 群组服务RPC客户端
+	msgClient              *rpcli.MsgClient                 // 消息服务RPC客户端
+	conversationClient     *rpcli.ConversationClient        // 会话服务RPC客户端
 }
 
+// NewConsumerHandler 创建消息推送处理器实例
+// 初始化推送处理器的所有依赖组件，包括RPC客户端、缓存、Kafka消费者等
+// 参数:
+//   - ctx: 上下文
+//   - config: 推送服务配置
+//   - database: 推送数据库控制器
+//   - offlinePusher: 离线推送器
+//   - rdb: Redis客户端
+//   - client: 服务发现客户端
+//
+// 返回:
+//   - *ConsumerHandler: 推送处理器实例
+//   - error: 初始化失败时的错误信息
 func NewConsumerHandler(ctx context.Context, config *Config, database controller.PushDatabase, offlinePusher offlinepush.OfflinePusher, rdb redis.UniversalClient,
 	client discovery.SvcDiscoveryRegistry) (*ConsumerHandler, error) {
 	var consumerHandler ConsumerHandler
@@ -93,6 +110,11 @@ func NewConsumerHandler(ctx context.Context, config *Config, database controller
 	return &consumerHandler, nil
 }
 
+// handleMs2PsChat 处理来自消息传输服务的推送消息
+// 这是消息推送的入口方法，解析Kafka消息并根据会话类型执行不同的推送逻辑
+// 参数:
+//   - ctx: 上下文
+//   - msg: 来自Kafka的protobuf编码消息
 func (c *ConsumerHandler) handleMs2PsChat(ctx context.Context, msg []byte) {
 	msgFromMQ := pbpush.PushMsgReq{}
 	if err := proto.Unmarshal(msg, &msgFromMQ); err != nil {
@@ -105,7 +127,7 @@ func (c *ConsumerHandler) handleMs2PsChat(ctx context.Context, msg []byte) {
 
 	if nowSec-sec > 10 {
 		prommetrics.MsgLoneTimePushCounter.Inc()
-		log.ZWarn(ctx, "it’s been a while since the message was sent", nil, "msg", msgFromMQ.String(), "sec", sec, "nowSec", nowSec, "nowSec-sec", nowSec-sec)
+		log.ZWarn(ctx, "it's been a while since the message was sent", nil, "msg", msgFromMQ.String(), "sec", sec, "nowSec", nowSec, "nowSec-sec", nowSec-sec)
 	}
 	var err error
 
@@ -149,7 +171,16 @@ func (c *ConsumerHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim s
 	return nil
 }
 
-// Push2User Suitable for two types of conversations, one is SingleChatType and the other is NotificationChatType.
+// Push2User 向用户推送消息
+// 适用于单聊和通知消息的推送，包含在线推送和离线推送逻辑
+// 推送流程：在线推送 -> 判断是否需要离线推送 -> 执行离线推送
+// 参数:
+//   - ctx: 上下文
+//   - userIDs: 目标用户ID列表
+//   - msg: 消息数据
+//
+// 返回:
+//   - err: 推送失败时的错误信息
 func (c *ConsumerHandler) Push2User(ctx context.Context, userIDs []string, msg *sdkws.MsgData) (err error) {
 	log.ZInfo(ctx, "Get msg from msg_transfer And push msg", "userIDs", userIDs, "msg", msg.String())
 	defer func(duration time.Time) {
@@ -244,6 +275,16 @@ func (c *ConsumerHandler) GetConnsAndOnlinePush(ctx context.Context, msg *sdkws.
 	return result, nil
 }
 
+// Push2Group 向群组推送消息
+// 处理群组消息的推送，包括获取群成员、在线推送、离线推送等完整流程
+// 支持webhook回调干预推送过程
+// 参数:
+//   - ctx: 上下文
+//   - groupID: 群组ID
+//   - msg: 消息数据
+//
+// 返回:
+//   - err: 推送失败时的错误信息
 func (c *ConsumerHandler) Push2Group(ctx context.Context, groupID string, msg *sdkws.MsgData) (err error) {
 	log.ZInfo(ctx, "Get group msg from msg_transfer and push msg", "msg", msg.String(), "groupID", groupID)
 	defer func(duration time.Time) {

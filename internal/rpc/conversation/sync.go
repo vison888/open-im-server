@@ -57,12 +57,15 @@ import (
 func (c *conversationServer) GetFullOwnerConversationIDs(ctx context.Context, req *conversation.GetFullOwnerConversationIDsReq) (*conversation.GetFullOwnerConversationIDsResp, error) {
 	// 1. 获取用户的最新会话版本信息
 	// 这个版本信息用于后续的增量同步，包含版本ID和版本号
+	// 版本信息是增量同步的基础，用于确定客户端需要同步的数据范围
 	vl, err := c.conversationDatabase.FindMaxConversationUserVersionCache(ctx, req.UserID)
 	if err != nil {
 		return nil, err
 	}
 
 	// 2. 查询用户的所有会话ID
+	// 获取用户当前拥有的所有会话标识符列表
+	// 这些ID将用于计算哈希值和后续的数据比较
 	conversationIDs, err := c.conversationDatabase.GetConversationIDs(ctx, req.UserID)
 	if err != nil {
 		return nil, err
@@ -70,9 +73,12 @@ func (c *conversationServer) GetFullOwnerConversationIDs(ctx context.Context, re
 
 	// 3. 计算会话ID列表的哈希值
 	// 哈希值用于快速比较客户端和服务端的会话列表是否一致
+	// 这是一种高效的数据一致性检查机制，避免传输大量数据
 	idHash := hashutil.IdHash(conversationIDs)
 
 	// 4. 如果客户端的哈希值与服务端一致，则无需返回会话ID列表
+	// 这是一种优化策略：当数据一致时，不传输具体的会话ID列表
+	// 减少网络传输量，提高同步效率
 	if req.IdHash == idHash {
 		conversationIDs = nil
 	}
@@ -118,33 +124,38 @@ func (c *conversationServer) GetFullOwnerConversationIDs(ctx context.Context, re
 func (c *conversationServer) GetIncrementalConversation(ctx context.Context, req *conversation.GetIncrementalConversationReq) (*conversation.GetIncrementalConversationResp, error) {
 	// 构建增量同步选项
 	// 使用泛型Option来处理会话类型的增量同步
+	// 这是一个高度可配置的增量同步框架，支持不同类型的数据同步
 	opt := incrversion.Option[*conversation.Conversation, conversation.GetIncrementalConversationResp]{
-		Ctx:           ctx,           // 请求上下文
-		VersionKey:    req.UserID,    // 版本键（用户ID）
-		VersionID:     req.VersionID, // 客户端当前版本ID
-		VersionNumber: req.Version,   // 客户端当前版本号
+		Ctx:           ctx,           // 请求上下文，用于传递请求信息和控制超时
+		VersionKey:    req.UserID,    // 版本键（用户ID），用于标识特定用户的版本信息
+		VersionID:     req.VersionID, // 客户端当前版本ID，用于确定同步起点
+		VersionNumber: req.Version,   // 客户端当前版本号，用于版本比较和验证
 
 		// 查询版本日志的回调函数
 		// 从数据库中获取指定版本范围的变更日志
+		// 这些日志记录了数据的增删改操作，是增量同步的核心数据源
 		Version: c.conversationDatabase.FindConversationUserVersion,
 
 		// 缓存最新版本的回调函数（可选）
 		// 用于性能优化，快速获取最新版本信息
+		// 避免每次都查询数据库，提高响应速度
 		CacheMaxVersion: c.conversationDatabase.FindMaxConversationUserVersionCache,
 
 		// 查询具体会话数据的回调函数
 		// 根据会话ID列表获取完整的会话数据
+		// 这个函数负责将ID转换为完整的会话对象
 		Find: func(ctx context.Context, conversationIDs []string) ([]*conversation.Conversation, error) {
 			return c.getConversations(ctx, req.UserID, conversationIDs)
 		},
 
 		// 构造响应结果的回调函数
 		// 将版本信息和数据变更组装成最终的响应格式
+		// 这个函数定义了响应的数据结构和格式
 		Resp: func(version *model.VersionLog, delIDs []string, insertList, updateList []*conversation.Conversation, full bool) *conversation.GetIncrementalConversationResp {
 			return &conversation.GetIncrementalConversationResp{
-				VersionID: version.ID.Hex(),        // 最新版本ID
-				Version:   uint64(version.Version), // 最新版本号
-				Full:      full,                    // 是否为全量同步
+				VersionID: version.ID.Hex(),        // 最新版本ID（十六进制字符串格式）
+				Version:   uint64(version.Version), // 最新版本号（无符号64位整数）
+				Full:      full,                    // 是否为全量同步（true: 全量, false: 增量）
 				Delete:    delIDs,                  // 删除的会话ID列表
 				Insert:    insertList,              // 新增的会话列表
 				Update:    updateList,              // 更新的会话列表
@@ -153,5 +164,7 @@ func (c *conversationServer) GetIncrementalConversation(ctx context.Context, req
 	}
 
 	// 执行增量同步并返回结果
+	// Build方法会根据配置的选项执行完整的增量同步流程
+	// 包括版本验证、数据查询、变更计算和响应构造
 	return opt.Build()
 }

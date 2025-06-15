@@ -469,123 +469,426 @@ func (s *friendServer) ImportFriends(ctx context.Context, req *relation.ImportFr
 }
 
 // ok.
+// RespondFriendApply 响应好友申请
+//
+// 处理好友申请的响应，包括同意和拒绝两种操作。
+// 这是好友申请流程的关键环节，决定了好友关系是否建立。
+//
+// 业务流程：
+// 1. 权限验证：确认用户有权限处理此申请
+// 2. 构建申请响应记录
+// 3. 根据处理结果执行不同逻辑：
+//   - 同意：建立好友关系，发送同意通知
+//   - 拒绝：更新申请状态，发送拒绝通知
+//
+// 4. 触发相应的Webhook回调
+//
+// 参数说明：
+// - req.FromUserID: 申请发起者用户ID
+// - req.ToUserID: 申请接收者用户ID（当前操作用户）
+// - req.HandleMsg: 处理消息（同意/拒绝的附加说明）
+// - req.HandleResult: 处理结果（1:同意, -1:拒绝）
+//
+// 返回值：
+// - 成功时返回空响应
+// - 失败时返回具体错误信息
+//
+// 处理结果类型：
+// - constant.FriendResponseAgree (1): 同意好友申请
+// - constant.FriendResponseRefuse (-1): 拒绝好友申请
+//
+// 同意申请流程：
+// 1. Webhook前置回调：允许外部系统干预
+// 2. 数据库操作：建立双向好友关系
+// 3. Webhook后置回调：通知外部系统
+// 4. 发送同意通知：通知申请者和相关用户
+//
+// 拒绝申请流程：
+// 1. 更新申请记录状态为拒绝
+// 2. 发送拒绝通知给申请者
+//
+// 错误处理：
+// - 权限验证失败：返回权限错误
+// - 数据库操作失败：返回数据库错误
+// - 参数错误：处理结果不在有效范围内
 func (s *friendServer) RespondFriendApply(ctx context.Context, req *relation.RespondFriendApplyReq) (resp *relation.RespondFriendApplyResp, err error) {
 	resp = &relation.RespondFriendApplyResp{}
+
+	// 权限验证：确保只有申请接收者本人或管理员能处理申请
 	if err := authverify.CheckAccessV3(ctx, req.ToUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
+	// 构建好友申请响应记录
 	friendRequest := model.FriendRequest{
-		FromUserID:   req.FromUserID,
-		ToUserID:     req.ToUserID,
-		HandleMsg:    req.HandleMsg,
-		HandleResult: req.HandleResult,
+		FromUserID:   req.FromUserID,   // 申请发起者
+		ToUserID:     req.ToUserID,     // 申请接收者
+		HandleMsg:    req.HandleMsg,    // 处理消息
+		HandleResult: req.HandleResult, // 处理结果
 	}
+
+	// 处理同意申请的情况
 	if req.HandleResult == constant.FriendResponseAgree {
+		// Webhook前置回调：在同意好友申请前调用外部系统
 		if err := s.webhookBeforeAddFriendAgree(ctx, &s.config.WebhooksConfig.BeforeAddFriendAgree, req); err != nil && err != servererrs.ErrCallbackContinue {
 			return nil, err
 		}
+
+		// 数据库操作：同意好友申请，建立好友关系
 		err := s.db.AgreeFriendRequest(ctx, &friendRequest)
 		if err != nil {
 			return nil, err
 		}
+
+		// Webhook后置回调：通知外部系统好友申请已同意
 		s.webhookAfterAddFriendAgree(ctx, &s.config.WebhooksConfig.AfterAddFriendAgree, req)
+
+		// 发送好友申请同意通知
 		s.notificationSender.FriendApplicationAgreedNotification(ctx, req)
+
 		return resp, nil
 	}
+
+	// 处理拒绝申请的情况
 	if req.HandleResult == constant.FriendResponseRefuse {
+		// 数据库操作：拒绝好友申请，更新申请状态
 		err := s.db.RefuseFriendRequest(ctx, &friendRequest)
 		if err != nil {
 			return nil, err
 		}
+
+		// 发送好友申请拒绝通知
 		s.notificationSender.FriendApplicationRefusedNotification(ctx, req)
+
 		return resp, nil
 	}
+
+	// 处理结果参数错误：不是有效的同意(-1)或拒绝(1)值
 	return nil, errs.ErrArgs.WrapMsg("req.HandleResult != -1/1")
 }
 
-// ok.
+// DeleteFriend 删除好友
+//
+// 删除指定的好友关系，这是一个单向操作，只删除操作者一方的好友关系。
+// 被删除的用户仍然可以保持对操作者的好友关系，除非对方也执行删除操作。
+//
+// 业务流程：
+// 1. 权限验证：确认用户有权限删除好友
+// 2. 好友关系验证：确认要删除的用户确实是好友
+// 3. 执行删除操作：从数据库中移除好友关系
+// 4. 发送删除通知：通知相关用户好友关系已删除
+// 5. Webhook回调：通知外部系统删除操作已完成
+//
+// 参数说明：
+// - req.OwnerUserID: 操作用户ID（执行删除操作的用户）
+// - req.FriendUserID: 要删除的好友用户ID
+//
+// 返回值：
+// - 成功时返回空响应
+// - 失败时返回具体错误信息
+//
+// 删除特点：
+// - 单向删除：只删除操作者一方的好友关系
+// - 立即生效：删除操作立即在数据库中生效
+// - 通知机制：通过通知系统告知相关用户
+// - 可恢复性：可以通过重新添加好友来恢复关系
+//
+// 验证机制：
+// - 权限验证：确保只有本人或管理员能删除好友
+// - 关系验证：确认要删除的用户确实在好友列表中
+// - 存在性验证：防止删除不存在的好友关系
+//
+// 错误处理：
+// - 权限不足：返回权限验证错误
+// - 好友不存在：返回好友关系不存在错误
+// - 数据库错误：返回数据库操作错误
+//
+// 使用场景：
+// - 用户主动删除不需要的好友
+// - 管理员清理异常的好友关系
+// - 批量好友关系管理
 func (s *friendServer) DeleteFriend(ctx context.Context, req *relation.DeleteFriendReq) (resp *relation.DeleteFriendResp, err error) {
+	// 权限验证：确保只有好友关系拥有者本人或管理员能删除好友
 	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
+	// 好友关系验证：确认要删除的用户确实在好友列表中
+	// 这个验证防止删除不存在的好友关系，确保操作的有效性
 	_, err = s.db.FindFriendsWithError(ctx, req.OwnerUserID, []string{req.FriendUserID})
 	if err != nil {
 		return nil, err
 	}
 
+	// 执行删除操作：从数据库中移除好友关系
+	// 注意：这是单向删除，只删除OwnerUserID对FriendUserID的好友关系
 	if err := s.db.Delete(ctx, req.OwnerUserID, []string{req.FriendUserID}); err != nil {
 		return nil, err
 	}
 
+	// 发送好友删除通知：通知相关用户好友关系已被删除
 	s.notificationSender.FriendDeletedNotification(ctx, req)
+
+	// Webhook后置回调：通知外部系统好友删除操作已完成
 	s.webhookAfterDeleteFriend(ctx, &s.config.WebhooksConfig.AfterDeleteFriend, req)
 
 	return &relation.DeleteFriendResp{}, nil
 }
 
-// ok.
+// SetFriendRemark 设置好友备注
+//
+// 为指定的好友设置或修改备注名称。备注是个人化的标识，
+// 只对设置者可见，不会影响其他用户对该好友的显示。
+//
+// 业务流程：
+// 1. Webhook前置回调：允许外部系统干预备注设置
+// 2. 权限验证：确认用户有权限设置好友备注
+// 3. 好友关系验证：确认要设置备注的用户确实是好友
+// 4. 更新备注信息：在数据库中更新好友备注
+// 5. Webhook后置回调：通知外部系统备注设置完成
+// 6. 发送通知：通知相关用户备注已更新
+//
+// 参数说明：
+// - req.OwnerUserID: 操作用户ID（设置备注的用户）
+// - req.FriendUserID: 好友用户ID（被设置备注的用户）
+// - req.Remark: 备注内容（可以为空字符串表示清除备注）
+//
+// 返回值：
+// - 成功时返回空响应
+// - 失败时返回具体错误信息
+//
+// 备注特点：
+// - 个人化：备注只对设置者可见
+// - 可修改：可以随时修改或清除备注
+// - 不影响关系：备注修改不影响好友关系本身
+// - 实时生效：备注修改立即在客户端生效
+//
+// 验证机制：
+// - 权限验证：确保只有本人或管理员能设置备注
+// - 关系验证：确认要设置备注的用户确实是好友
+// - 回调验证：通过Webhook允许外部系统控制备注设置
+//
+// 错误处理：
+// - 权限不足：返回权限验证错误
+// - 好友不存在：返回好友关系不存在错误
+// - 回调拦截：外部系统拒绝备注设置
+// - 数据库错误：返回数据库操作错误
+//
+// 使用场景：
+// - 用户为好友设置个性化备注
+// - 批量修改好友备注
+// - 清除不需要的好友备注
+// - 好友信息管理和整理
 func (s *friendServer) SetFriendRemark(ctx context.Context, req *relation.SetFriendRemarkReq) (resp *relation.SetFriendRemarkResp, err error) {
+	// Webhook前置回调：在设置好友备注前调用外部系统
+	// 允许外部系统根据业务逻辑决定是否允许设置备注
 	if err = s.webhookBeforeSetFriendRemark(ctx, &s.config.WebhooksConfig.BeforeSetFriendRemark, req); err != nil && err != servererrs.ErrCallbackContinue {
 		return nil, err
 	}
 
+	// 权限验证：确保只有好友关系拥有者本人或管理员能设置备注
 	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
 
+	// 好友关系验证：确认要设置备注的用户确实在好友列表中
+	// 防止为非好友用户设置备注，确保操作的合法性
 	_, err = s.db.FindFriendsWithError(ctx, req.OwnerUserID, []string{req.FriendUserID})
 	if err != nil {
 		return nil, err
 	}
 
+	// 更新好友备注：在数据库中更新指定好友的备注信息
 	if err := s.db.UpdateRemark(ctx, req.OwnerUserID, req.FriendUserID, req.Remark); err != nil {
 		return nil, err
 	}
 
+	// Webhook后置回调：通知外部系统好友备注设置已完成
 	s.webhookAfterSetFriendRemark(ctx, &s.config.WebhooksConfig.AfterSetFriendRemark, req)
+
+	// 发送好友备注设置通知：通知客户端备注已更新
 	s.notificationSender.FriendRemarkSetNotification(ctx, req.OwnerUserID, req.FriendUserID)
 
 	return &relation.SetFriendRemarkResp{}, nil
 }
 
+// GetFriendInfo 获取好友信息
+//
+// 根据好友用户ID列表获取指定好友的详细信息。
+// 返回的信息包括好友关系的元数据，如备注、添加时间、来源等。
+//
+// 业务流程：
+// 1. 权限验证：确认用户有权限查询好友信息
+// 2. 查询好友信息：从数据库获取指定好友的详细信息
+// 3. 数据转换：将数据库模型转换为API响应格式
+//
+// 参数说明：
+// - req.OwnerUserID: 好友关系拥有者用户ID
+// - req.FriendUserIDs: 要查询的好友用户ID列表
+//
+// 返回值：
+// - FriendInfos: 好友信息列表，包含好友关系的详细数据
+// - error: 查询过程中的错误信息
+//
+// 返回信息包含：
+// - 好友用户ID和基本信息
+// - 好友备注（个人设置的备注名）
+// - 添加时间（建立好友关系的时间）
+// - 添加来源（如何添加的好友）
+// - 操作者信息（谁添加的好友）
+// - 扩展字段（自定义数据）
+//
+// 验证机制：
+// - 权限验证：确保只有本人或管理员能查询好友信息
+// - 关系验证：通过FindFriendsWithError确保查询的都是真实好友
+//
+// 错误处理：
+// - 权限不足：返回权限验证错误
+// - 好友不存在：返回好友关系不存在错误
+// - 数据库错误：返回数据库查询错误
+//
+// 使用场景：
+// - 客户端显示好友详细信息
+// - 好友关系管理和维护
+// - 好友信息批量查询
+// - 数据同步和备份
 func (s *friendServer) GetFriendInfo(ctx context.Context, req *relation.GetFriendInfoReq) (*relation.GetFriendInfoResp, error) {
+	// 权限验证：确保只有好友关系拥有者本人或管理员能查询好友信息
 	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
+
+	// 查询好友信息：从数据库获取指定好友的详细信息
+	// FindFriendsWithError会验证所有指定的用户ID都是真实的好友关系
 	friends, err := s.db.FindFriendsWithError(ctx, req.OwnerUserID, req.FriendUserIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 数据转换并返回：将数据库模型转换为API响应格式
 	return &relation.GetFriendInfoResp{FriendInfos: convert.FriendOnlyDB2PbOnly(friends)}, nil
 }
 
+// GetDesignatedFriends 获取指定好友信息
+//
+// 获取指定好友用户ID列表对应的完整好友信息，包括用户基本信息和好友关系信息。
+// 与GetFriendInfo不同，此方法返回更完整的信息，包括用户的基本资料。
+//
+// 业务流程：
+// 1. 参数验证：检查好友用户ID列表是否有重复
+// 2. 权限验证：确认用户有权限查询好友信息
+// 3. 获取好友信息：调用内部方法获取完整的好友信息
+// 4. 返回结果：包含用户基本信息和好友关系信息
+//
+// 参数说明：
+// - req.OwnerUserID: 好友关系拥有者用户ID
+// - req.FriendUserIDs: 要查询的好友用户ID列表
+//
+// 返回值：
+// - FriendsInfo: 完整的好友信息列表
+// - error: 查询过程中的错误信息
+//
+// 返回信息包含：
+// - 用户基本信息（昵称、头像、个人资料等）
+// - 好友关系信息（备注、添加时间、来源等）
+// - 组合后的完整好友展示信息
+//
+// 参数验证：
+// - 重复检查：防止好友用户ID列表中有重复项
+// - 权限验证：确保只有本人或管理员能查询
+//
+// 错误处理：
+// - 参数重复：返回参数重复错误
+// - 权限不足：返回权限验证错误
+// - 查询失败：返回数据库查询错误
+//
+// 使用场景：
+// - 客户端好友列表显示
+// - 好友详情页面展示
+// - 好友信息批量获取
+// - 聊天界面好友信息显示
+//
+// 与GetFriendInfo的区别：
+// - GetFriendInfo：只返回好友关系数据
+// - GetDesignatedFriends：返回用户信息+好友关系的完整数据
 func (s *friendServer) GetDesignatedFriends(ctx context.Context, req *relation.GetDesignatedFriendsReq) (resp *relation.GetDesignatedFriendsResp, err error) {
 	resp = &relation.GetDesignatedFriendsResp{}
+
+	// 参数验证：检查好友用户ID列表是否有重复项
 	if datautil.Duplicate(req.FriendUserIDs) {
 		return nil, errs.ErrArgs.WrapMsg("friend userID repeated")
 	}
+
+	// 权限验证：确保只有好友关系拥有者本人或管理员能查询好友信息
 	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
+
+	// 获取完整的好友信息：包括用户基本信息和好友关系信息
 	friends, err := s.getFriend(ctx, req.OwnerUserID, req.FriendUserIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 返回完整的好友信息列表
 	return &relation.GetDesignatedFriendsResp{
 		FriendsInfo: friends,
 	}, nil
 }
 
+// getFriend 内部方法：获取好友完整信息
+//
+// 这是一个内部辅助方法，用于获取指定好友的完整信息，
+// 包括好友关系数据和用户基本信息的组合。
+//
+// 处理流程：
+// 1. 空值检查：如果好友ID列表为空，直接返回空结果
+// 2. 查询好友关系：从数据库获取好友关系数据
+// 3. 获取用户信息：通过用户服务获取用户基本信息
+// 4. 数据合并：将好友关系和用户信息合并为完整的好友信息
+//
+// 参数说明：
+// - ownerUserID: 好友关系拥有者用户ID
+// - friendUserIDs: 要查询的好友用户ID列表
+//
+// 返回值：
+// - []*sdkws.FriendInfo: 完整的好友信息列表
+// - error: 查询过程中的错误信息
+//
+// 数据组合：
+// - 好友关系数据：备注、添加时间、来源等
+// - 用户基本信息：昵称、头像、个人资料等
+// - 合并后的完整展示信息
+//
+// 性能优化：
+// - 空值快速返回：避免不必要的数据库查询
+// - 批量用户信息获取：一次性获取多个用户信息
+// - 数据转换优化：使用高效的转换函数
+//
+// 错误处理：
+// - 好友关系不存在：通过FindFriendsWithError验证
+// - 用户信息获取失败：返回用户服务错误
+// - 数据转换失败：返回转换过程中的错误
+//
+// 使用场景：
+// - GetDesignatedFriends方法的内部实现
+// - 其他需要完整好友信息的内部方法
+// - 好友信息的统一获取入口
 func (s *friendServer) getFriend(ctx context.Context, ownerUserID string, friendUserIDs []string) ([]*sdkws.FriendInfo, error) {
+	// 空值检查：如果好友ID列表为空，直接返回空结果
 	if len(friendUserIDs) == 0 {
 		return nil, nil
 	}
+
+	// 查询好友关系：从数据库获取好友关系数据
+	// FindFriendsWithError会验证所有指定的用户ID都是真实的好友关系
 	friends, err := s.db.FindFriendsWithError(ctx, ownerUserID, friendUserIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 数据合并和转换：将好友关系数据和用户基本信息合并
+	// convert.FriendsDB2Pb会自动获取用户信息并合并到好友信息中
 	return convert.FriendsDB2Pb(ctx, friends, s.userClient.GetUsersInfoMap)
 }
 
@@ -655,13 +958,57 @@ func (s *friendServer) GetPaginationFriendsApplyFrom(ctx context.Context, req *r
 	return resp, nil
 }
 
-// ok.
+// IsFriend 检查好友关系
+//
+// 检查两个用户之间的好友关系状态，返回双向的好友关系信息。
+// 由于好友关系可能是单向的，此方法会分别检查两个方向的关系。
+//
+// 业务逻辑：
+// 1. 检查用户1是否在用户2的好友列表中
+// 2. 检查用户2是否在用户1的好友列表中
+// 3. 返回双向的好友关系状态
+//
+// 参数说明：
+// - req.UserID1: 第一个用户ID
+// - req.UserID2: 第二个用户ID
+//
+// 返回值：
+// - InUser1Friends: 用户2是否在用户1的好友列表中
+// - InUser2Friends: 用户1是否在用户2的好友列表中
+// - error: 查询过程中的错误信息
+//
+// 好友关系状态：
+// - true, true: 双向好友关系（互为好友）
+// - true, false: 单向好友关系（用户1单方面添加了用户2）
+// - false, true: 单向好友关系（用户2单方面添加了用户1）
+// - false, false: 无好友关系
+//
+// 使用场景：
+// - 聊天界面显示好友状态
+// - 好友申请前的关系检查
+// - 权限验证中的好友关系确认
+// - 社交功能中的关系判断
+//
+// 性能特点：
+// - 单次查询：一次数据库查询获取双向关系
+// - 高效检查：使用数据库索引快速查询
+// - 无权限限制：任何用户都可以查询好友关系状态
+//
+// 注意事项：
+// - 此接口不需要权限验证，任何用户都可以查询
+// - 返回的是关系状态，不包含具体的好友信息
+// - 适用于需要快速判断关系状态的场景
 func (s *friendServer) IsFriend(ctx context.Context, req *relation.IsFriendReq) (resp *relation.IsFriendResp, err error) {
 	resp = &relation.IsFriendResp{}
+
+	// 检查双向好友关系：
+	// InUser1Friends: 用户2是否在用户1的好友列表中
+	// InUser2Friends: 用户1是否在用户2的好友列表中
 	resp.InUser1Friends, resp.InUser2Friends, err = s.db.CheckIn(ctx, req.UserID1, req.UserID2)
 	if err != nil {
 		return nil, err
 	}
+
 	return resp, nil
 }
 
@@ -837,12 +1184,57 @@ func (s *friendServer) GetSelfUnhandledApplyCount(ctx context.Context, req *rela
 	}, nil
 }
 
+// getCommonUserMap 内部方法：获取用户信息映射表
+//
+// 这是一个内部辅助方法，用于批量获取用户信息并转换为映射表格式。
+// 主要用于好友申请等需要用户信息的场景。
+//
+// 处理流程：
+// 1. 通过用户服务批量获取用户信息
+// 2. 将用户信息列表转换为以用户ID为键的映射表
+// 3. 返回符合CommonUser接口的用户信息映射
+//
+// 参数说明：
+// - userIDs: 要获取信息的用户ID列表
+//
+// 返回值：
+// - map[string]common_user.CommonUser: 用户ID到用户信息的映射
+// - error: 获取过程中的错误信息
+//
+// 数据转换：
+// - 输入：用户ID列表
+// - 中间：用户信息列表（从用户服务获取）
+// - 输出：用户ID到CommonUser的映射表
+//
+// 性能优化：
+// - 批量获取：一次性获取多个用户信息，减少网络开销
+// - 映射转换：使用高效的切片到映射转换函数
+// - 接口适配：转换为通用的CommonUser接口
+//
+// 错误处理：
+// - 用户服务错误：透传用户服务的错误信息
+// - 网络错误：处理服务间通信异常
+// - 数据转换错误：处理数据格式异常
+//
+// 使用场景：
+// - 好友申请通知中的用户信息填充
+// - 好友列表显示中的用户信息获取
+// - 任何需要批量用户信息的内部方法
+//
+// CommonUser接口：
+// - 提供统一的用户信息访问接口
+// - 支持不同类型的用户信息实现
+// - 便于代码复用和维护
 func (s *friendServer) getCommonUserMap(ctx context.Context, userIDs []string) (map[string]common_user.CommonUser, error) {
+	// 通过用户服务批量获取用户信息
 	users, err := s.userClient.GetUsersInfo(ctx, userIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 将用户信息列表转换为以用户ID为键的映射表
+	// 同时将*sdkws.UserInfo转换为common_user.CommonUser接口
 	return datautil.SliceToMapAny(users, func(e *sdkws.UserInfo) (string, common_user.CommonUser) {
-		return e.UserID, e
+		return e.UserID, e // 用户ID作为键，用户信息作为值
 	}), nil
 }

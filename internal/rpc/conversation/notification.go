@@ -77,7 +77,10 @@ func NewConversationNotificationSender(conf *config.Notification, msgClient *rpc
 	return &ConversationNotificationSender{
 		// 使用消息客户端初始化通用通知发送器
 		// WithRpcClient选项配置了消息发送的具体实现
+		// 这种设计模式实现了依赖注入，使通知发送器与具体的消息服务解耦
 		notification.NewNotificationSender(conf, notification.WithRpcClient(func(ctx context.Context, req *msg.SendMsgReq) (*msg.SendMsgResp, error) {
+			// 通过RPC调用消息服务发送通知消息
+			// 这确保了通知消息与普通消息使用相同的发送机制和可靠性保证
 			return msgClient.SendMsg(ctx, req)
 		})),
 	}
@@ -108,6 +111,7 @@ func (c *ConversationNotificationSender) ConversationSetPrivateNotification(ctx 
 	isPrivateChat bool, conversationID string,
 ) {
 	// 构造会话隐私设置通知的数据结构
+	// 这个结构包含了隐私设置变更的所有必要信息
 	tips := &sdkws.ConversationSetPrivateTips{
 		RecvID:         recvID,         // 接收通知的用户ID
 		SendID:         sendID,         // 发起设置的用户ID
@@ -119,6 +123,12 @@ func (c *ConversationNotificationSender) ConversationSetPrivateNotification(ctx 
 	// 通知类型：ConversationPrivateChatNotification
 	// 发送者：sendID（发起设置变更的用户）
 	// 接收者：recvID（需要接收通知的用户）
+	//
+	// 通知流程：
+	// 1. 构造系统通知消息
+	// 2. 通过消息服务发送给目标用户
+	// 3. 客户端收到通知后更新会话隐私状态
+	// 4. 实现多端实时同步
 	c.Notification(ctx, sendID, recvID, constant.ConversationPrivateChatNotification, tips)
 }
 
@@ -146,6 +156,7 @@ func (c *ConversationNotificationSender) ConversationSetPrivateNotification(ctx 
 // - 客户端收到通知后可以刷新相应的会话数据
 func (c *ConversationNotificationSender) ConversationChangeNotification(ctx context.Context, userID string, conversationIDs []string) {
 	// 构造会话变更通知的数据结构
+	// 包含用户ID和发生变更的会话ID列表
 	tips := &sdkws.ConversationUpdateTips{
 		UserID:             userID,          // 接收通知的用户ID
 		ConversationIDList: conversationIDs, // 发生变更的会话ID列表
@@ -155,6 +166,18 @@ func (c *ConversationNotificationSender) ConversationChangeNotification(ctx cont
 	// 通知类型：ConversationChangeNotification
 	// 发送者和接收者都是同一个用户（userID）
 	// 这种设计是因为会话变更通知主要用于多端同步
+	//
+	// 多端同步机制：
+	// 1. 用户在设备A上修改会话设置
+	// 2. 服务端更新数据库并发送通知
+	// 3. 用户的其他设备（B、C、D等）收到通知
+	// 4. 其他设备自动更新本地会话状态
+	// 5. 实现所有设备的会话状态一致性
+	//
+	// 批量处理优势：
+	// - 支持一次通知多个会话的变更
+	// - 减少网络开销和通知频率
+	// - 提高多会话操作的效率
 	c.Notification(ctx, userID, userID, constant.ConversationChangeNotification, tips)
 }
 
@@ -186,6 +209,7 @@ func (c *ConversationNotificationSender) ConversationUnreadChangeNotification(
 	unreadCountTime, hasReadSeq int64,
 ) {
 	// 构造会话未读数变更通知的数据结构
+	// 包含未读数计算所需的所有关键信息
 	tips := &sdkws.ConversationHasReadTips{
 		UserID:          userID,          // 接收通知的用户ID
 		ConversationID:  conversationID,  // 发生变更的会话ID
@@ -197,5 +221,23 @@ func (c *ConversationNotificationSender) ConversationUnreadChangeNotification(
 	// 通知类型：ConversationUnreadNotification
 	// 发送者和接收者都是同一个用户（userID）
 	// 这种设计用于多端未读数同步
+	//
+	// 未读数同步机制：
+	// 1. 用户在设备A上阅读消息
+	// 2. 服务端更新用户的已读序列号
+	// 3. 计算新的未读数并发送通知
+	// 4. 用户的其他设备收到通知后更新未读数显示
+	// 5. 所有设备的未读数保持一致
+	//
+	// 关键参数说明：
+	// - hasReadSeq: 用户已读的最大消息序列号，用于计算未读数
+	// - unreadCountTime: 统计时间戳，用于时间同步和去重
+	// - conversationID: 特定会话的标识，支持单会话未读数更新
+	//
+	// 应用场景：
+	// - 用户阅读消息后的未读数更新
+	// - 消息撤回后的未读数重新计算
+	// - 会话清空后的未读数重置
+	// - 多端登录时的未读数同步
 	c.Notification(ctx, userID, userID, constant.ConversationUnreadNotification, tips)
 }

@@ -317,71 +317,217 @@ func (g *NotificationSender) getGroupInfo(ctx context.Context, groupID string) (
 	return convert.Db2PbGroupInfo(gm, ownerUserID, num), nil
 }
 
+// getGroupMembers 获取群组成员详细信息
+//
+// 根据群组ID和用户ID列表获取群组成员的完整信息，包括成员在群内的角色、
+// 昵称、头像等信息。这是群组通知系统中获取成员信息的核心方法。
+//
+// 处理流程：
+// 1. 从数据库查询指定用户在群组中的成员信息
+// 2. 填充成员的显示信息（昵称、头像等）
+// 3. 转换为标准的Protobuf格式返回
+//
+// 参数说明：
+// - groupID: 群组ID，指定要查询的群组
+// - userIDs: 用户ID列表，指定要查询的成员
+//
+// 返回值：
+// - []*sdkws.GroupMemberFullInfo: 群组成员完整信息列表
+// - error: 查询过程中的错误信息
+//
+// 使用场景：
+// - 通知消息中需要展示成员信息
+// - 群组操作后的成员信息同步
+// - 权限验证时的成员角色查询
 func (g *NotificationSender) getGroupMembers(ctx context.Context, groupID string, userIDs []string) ([]*sdkws.GroupMemberFullInfo, error) {
+	// 从数据库查询群组成员信息
 	members, err := g.db.FindGroupMembers(ctx, groupID, userIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 填充成员的显示信息（昵称、头像等）
 	if err := g.PopulateGroupMember(ctx, members...); err != nil {
 		return nil, err
 	}
+
+	// 记录调试日志，便于问题排查
 	log.ZDebug(ctx, "getGroupMembers", "members", members)
+
+	// 转换为Protobuf格式的成员信息列表
 	res := make([]*sdkws.GroupMemberFullInfo, 0, len(members))
 	for _, member := range members {
+		// 转换单个成员信息，appMangerLevel设为0表示非应用管理员
 		res = append(res, g.groupMemberDB2PB(member, 0))
 	}
 	return res, nil
 }
 
+// getGroupMemberMap 获取群组成员信息映射表
+//
+// 基于getGroupMembers方法，将群组成员信息转换为以用户ID为键的映射表，
+// 便于快速查找特定用户的群组成员信息。
+//
+// 处理流程：
+// 1. 调用getGroupMembers获取成员信息列表
+// 2. 构建以用户ID为键的映射表
+// 3. 返回映射表供快速查找使用
+//
+// 参数说明：
+// - groupID: 群组ID
+// - userIDs: 要查询的用户ID列表
+//
+// 返回值：
+// - map[string]*sdkws.GroupMemberFullInfo: 用户ID到成员信息的映射
+// - error: 查询过程中的错误
+//
+// 使用场景：
+// - 需要频繁查找特定用户信息的场景
+// - 通知消息中需要区分不同用户角色
+// - 批量处理成员信息时的快速查找
 func (g *NotificationSender) getGroupMemberMap(ctx context.Context, groupID string, userIDs []string) (map[string]*sdkws.GroupMemberFullInfo, error) {
+	// 获取群组成员信息列表
 	members, err := g.getGroupMembers(ctx, groupID, userIDs)
 	if err != nil {
 		return nil, err
 	}
+
+	// 构建用户ID到成员信息的映射表
 	m := make(map[string]*sdkws.GroupMemberFullInfo)
 	for i, member := range members {
+		// 使用索引访问确保指针正确性
 		m[member.UserID] = members[i]
 	}
 	return m, nil
 }
 
+// getGroupMember 获取单个群组成员信息
+//
+// 获取指定用户在指定群组中的成员信息。这是getGroupMembers的单用户版本，
+// 用于只需要查询一个用户信息的场景。
+//
+// 处理流程：
+// 1. 调用getGroupMembers查询单个用户
+// 2. 验证查询结果是否为空
+// 3. 返回第一个（也是唯一的）成员信息
+//
+// 参数说明：
+// - groupID: 群组ID
+// - userID: 要查询的用户ID
+//
+// 返回值：
+// - *sdkws.GroupMemberFullInfo: 群组成员完整信息
+// - error: 查询错误或用户不存在错误
+//
+// 错误处理：
+// - 如果用户不在群组中，返回用户未找到错误
+// - 数据库查询失败时返回相应错误
+//
+// 使用场景：
+// - 通知中需要展示特定用户信息
+// - 权限验证时查询用户角色
+// - 单用户操作的信息获取
 func (g *NotificationSender) getGroupMember(ctx context.Context, groupID string, userID string) (*sdkws.GroupMemberFullInfo, error) {
+	// 查询单个用户的群组成员信息
 	members, err := g.getGroupMembers(ctx, groupID, []string{userID})
 	if err != nil {
 		return nil, err
 	}
+
+	// 验证用户是否在群组中
 	if len(members) == 0 {
 		return nil, errs.ErrInternalServer.WrapMsg(fmt.Sprintf("group %s member %s not found", groupID, userID))
 	}
+
+	// 返回用户的群组成员信息
 	return members[0], nil
 }
 
+// getGroupOwnerAndAdminUserID 获取群主和管理员用户ID列表
+//
+// 查询指定群组中所有群主和管理员的用户ID，用于需要向管理层发送通知的场景。
+// 在群组管理中，很多操作需要通知群主和管理员，此方法提供了统一的查询接口。
+//
+// 处理流程：
+// 1. 查询群组中角色为群主或管理员的成员
+// 2. 填充成员的基本信息
+// 3. 提取并返回用户ID列表
+//
+// 参数说明：
+// - groupID: 群组ID
+//
+// 返回值：
+// - []string: 群主和管理员的用户ID列表
+// - error: 查询过程中的错误
+//
+// 角色说明：
+// - constant.GroupOwner: 群主角色
+// - constant.GroupAdmin: 管理员角色
+//
+// 使用场景：
+// - 群组申请通知：向管理员发送入群申请
+// - 群组变更通知：通知管理层群组信息变更
+// - 权限操作通知：需要管理员知晓的操作
 func (g *NotificationSender) getGroupOwnerAndAdminUserID(ctx context.Context, groupID string) ([]string, error) {
+	// 查询群组中的群主和管理员成员
 	members, err := g.db.FindGroupMemberRoleLevels(ctx, groupID, []int32{constant.GroupOwner, constant.GroupAdmin})
 	if err != nil {
 		return nil, err
 	}
+
+	// 填充成员的基本信息（昵称、头像等）
 	if err := g.PopulateGroupMember(ctx, members...); err != nil {
 		return nil, err
 	}
+
+	// 提取用户ID的转换函数
 	fn := func(e *model.GroupMember) string { return e.UserID }
+
+	// 将成员列表转换为用户ID列表
 	return datautil.Slice(members, fn), nil
 }
 
+// groupMemberDB2PB 将数据库群组成员模型转换为Protobuf格式
+//
+// 这是一个数据转换方法，将从数据库查询到的群组成员信息转换为
+// gRPC通信使用的Protobuf格式。确保数据格式的统一性和兼容性。
+//
+// 转换内容：
+// - 基础信息：群组ID、用户ID、角色等级
+// - 时间字段：加入时间、禁言结束时间（转换为毫秒时间戳）
+// - 显示信息：群内昵称、头像URL
+// - 关系信息：邀请人、操作人、加入来源
+// - 扩展字段：自定义扩展数据
+//
+// 参数说明：
+// - member: 数据库中的群组成员模型
+// - appMangerLevel: 应用管理员等级（0表示非应用管理员）
+//
+// 返回值：
+// - *sdkws.GroupMemberFullInfo: Protobuf格式的群组成员完整信息
+//
+// 时间处理：
+// - 所有时间字段都转换为Unix毫秒时间戳
+// - 确保前端能够正确解析时间信息
+//
+// 使用场景：
+// - API响应数据格式化
+// - 通知消息中的成员信息
+// - 群组成员列表查询结果
 func (g *NotificationSender) groupMemberDB2PB(member *model.GroupMember, appMangerLevel int32) *sdkws.GroupMemberFullInfo {
 	return &sdkws.GroupMemberFullInfo{
-		GroupID:        member.GroupID,
-		UserID:         member.UserID,
-		RoleLevel:      member.RoleLevel,
-		JoinTime:       member.JoinTime.UnixMilli(),
-		Nickname:       member.Nickname,
-		FaceURL:        member.FaceURL,
-		AppMangerLevel: appMangerLevel,
-		JoinSource:     member.JoinSource,
-		OperatorUserID: member.OperatorUserID,
-		Ex:             member.Ex,
-		MuteEndTime:    member.MuteEndTime.UnixMilli(),
-		InviterUserID:  member.InviterUserID,
+		GroupID:        member.GroupID,                 // 群组ID
+		UserID:         member.UserID,                  // 用户ID
+		RoleLevel:      member.RoleLevel,               // 群内角色等级（群主/管理员/普通成员）
+		JoinTime:       member.JoinTime.UnixMilli(),    // 加入群组时间（毫秒时间戳）
+		Nickname:       member.Nickname,                // 群内昵称
+		FaceURL:        member.FaceURL,                 // 群内头像URL
+		AppMangerLevel: appMangerLevel,                 // 应用管理员等级
+		JoinSource:     member.JoinSource,              // 加入来源（邀请/申请/扫码等）
+		OperatorUserID: member.OperatorUserID,          // 操作人用户ID（谁添加的此成员）
+		Ex:             member.Ex,                      // 扩展字段
+		MuteEndTime:    member.MuteEndTime.UnixMilli(), // 禁言结束时间（毫秒时间戳）
+		InviterUserID:  member.InviterUserID,           // 邀请人用户ID
 	}
 }
 
@@ -397,74 +543,231 @@ func (g *NotificationSender) groupMemberDB2PB(member *model.GroupMember, appMang
 	return result, nil
 } */
 
+// fillOpUser 填充操作用户信息
+//
+// 这是一个便捷方法，用于填充当前操作用户的群组成员信息。
+// 从上下文中获取操作用户ID，然后调用fillUserByUserID进行信息填充。
+//
+// 处理逻辑：
+// 1. 从上下文获取当前操作用户ID
+// 2. 调用fillUserByUserID填充用户信息
+// 3. 返回填充结果
+//
+// 参数说明：
+// - targetUser: 指向群组成员信息指针的指针，用于接收填充结果
+// - groupID: 群组ID，用于查询用户在群内的信息
+//
+// 返回值：
+// - error: 填充过程中的错误信息
+//
+// 使用场景：
+// - 通知消息中需要展示操作者信息
+// - 群组操作记录中的操作人信息
+// - 权限验证时的当前用户信息
+//
+// 注意事项：
+// - targetUser是双重指针，允许方法修改指针指向的内容
+// - 操作用户ID从请求上下文中自动获取
 func (g *NotificationSender) fillOpUser(ctx context.Context, targetUser **sdkws.GroupMemberFullInfo, groupID string) (err error) {
+	// 从上下文获取操作用户ID，然后填充用户信息
 	return g.fillUserByUserID(ctx, mcontext.GetOpUserID(ctx), targetUser, groupID)
 }
 
+// fillUserByUserID 根据用户ID填充用户信息
+//
+// 这是用户信息填充的核心方法，负责获取用户的完整信息并填充到目标结构中。
+// 支持群组成员信息和普通用户信息的混合填充，确保信息的完整性。
+//
+// 填充策略：
+// 1. 如果指定了群组ID，优先获取用户在群内的成员信息
+// 2. 如果用户是系统管理员，设置特殊的管理员标识
+// 3. 获取用户的基础信息（昵称、头像等）
+// 4. 按优先级填充：群内信息 > 用户基础信息
+//
+// 参数说明：
+// - userID: 要填充信息的用户ID
+// - targetUser: 指向群组成员信息指针的指针，用于接收填充结果
+// - groupID: 群组ID，为空时只填充用户基础信息
+//
+// 返回值：
+// - error: 填充过程中的错误信息
+//
+// 错误处理：
+// - 参数验证：检查targetUser指针是否为nil
+// - 数据库错误：区分记录不存在和其他数据库错误
+// - 用户不存在：通过用户服务验证用户有效性
+//
+// 管理员处理：
+// - 系统管理员自动获得群组管理员权限
+// - 设置AppMangerLevel为应用管理员级别
+//
+// 信息优先级：
+// - 群内昵称 > 用户昵称
+// - 群内头像 > 用户头像
+// - 群内信息优先展示
 func (g *NotificationSender) fillUserByUserID(ctx context.Context, userID string, targetUser **sdkws.GroupMemberFullInfo, groupID string) error {
+	// 参数验证：确保targetUser指针不为空
 	if targetUser == nil {
 		return errs.ErrInternalServer.WrapMsg("**sdkws.GroupMemberFullInfo is nil")
 	}
+
+	// 如果指定了群组ID，尝试获取用户在群内的成员信息
 	if groupID != "" {
+		// 检查用户是否为系统管理员
 		if authverify.IsManagerUserID(userID, g.config.Share.IMAdminUserID) {
+			// 系统管理员自动获得群组管理员权限
 			*targetUser = &sdkws.GroupMemberFullInfo{
-				GroupID:        groupID,
-				UserID:         userID,
-				RoleLevel:      constant.GroupAdmin,
-				AppMangerLevel: constant.AppAdmin,
+				GroupID:        groupID,             // 群组ID
+				UserID:         userID,              // 用户ID
+				RoleLevel:      constant.GroupAdmin, // 角色等级：管理员
+				AppMangerLevel: constant.AppAdmin,   // 应用管理员等级
 			}
 		} else {
+			// 查询用户在群组中的成员信息
 			member, err := g.db.TakeGroupMember(ctx, groupID, userID)
 			if err == nil {
+				// 成功获取群组成员信息，转换为Protobuf格式
 				*targetUser = g.groupMemberDB2PB(member, 0)
 			} else if !(errors.Is(err, mongo.ErrNoDocuments) || errs.ErrRecordNotFound.Is(err)) {
+				// 如果不是记录不存在的错误，则返回错误
 				return err
 			}
+			// 如果是记录不存在，继续后续处理
 		}
 	}
+
+	// 获取用户的基础信息
 	user, err := g.getUser(ctx, userID)
 	if err != nil {
 		return err
 	}
+
+	// 如果还没有目标用户信息，创建基础的用户信息结构
 	if *targetUser == nil {
 		*targetUser = &sdkws.GroupMemberFullInfo{
-			GroupID:        groupID,
-			UserID:         userID,
-			Nickname:       user.Nickname,
-			FaceURL:        user.FaceURL,
-			OperatorUserID: userID,
+			GroupID:        groupID,       // 群组ID
+			UserID:         userID,        // 用户ID
+			Nickname:       user.Nickname, // 用户昵称
+			FaceURL:        user.FaceURL,  // 用户头像
+			OperatorUserID: userID,        // 操作人ID（自己）
 		}
 	} else {
+		// 如果已有目标用户信息，按优先级填充缺失的字段
+
+		// 填充昵称：如果群内昵称为空，使用用户昵称
 		if (*targetUser).Nickname == "" {
 			(*targetUser).Nickname = user.Nickname
 		}
+
+		// 填充头像：如果群内头像为空，使用用户头像
 		if (*targetUser).FaceURL == "" {
 			(*targetUser).FaceURL = user.FaceURL
 		}
 	}
+
 	return nil
 }
 
+// setVersion 设置版本信息
+//
+// 从版本上下文中获取指定集合和文档的版本信息，用于增量同步机制。
+// 版本信息帮助客户端识别数据变更，实现高效的增量更新。
+//
+// 查找策略：
+// 1. 从版本日志上下文中获取所有版本记录
+// 2. 倒序遍历版本记录（最新的版本在后面）
+// 3. 匹配集合名称和文档ID
+// 4. 设置版本号和版本ID
+//
+// 参数说明：
+// - version: 指向版本号的指针，用于接收版本号
+// - versionID: 指向版本ID的指针，用于接收版本ID
+// - collName: 集合名称，用于匹配特定的数据集合
+// - id: 文档ID，用于匹配特定的文档
+//
+// 版本机制：
+// - 每次数据变更都会生成新的版本记录
+// - 版本号递增，确保版本的唯一性和顺序性
+// - 版本ID是MongoDB ObjectID的十六进制表示
+//
+// 使用场景：
+// - 群组成员变更通知
+// - 群组信息变更通知
+// - 客户端增量同步
+//
+// 注意事项：
+// - 倒序遍历确保获取最新版本
+// - 如果没有找到匹配的版本，版本信息保持原值
 func (g *NotificationSender) setVersion(ctx context.Context, version *uint64, versionID *string, collName string, id string) {
+	// 从版本上下文获取所有版本记录
 	versions := versionctx.GetVersionLog(ctx).Get()
+
+	// 倒序遍历版本记录，确保获取最新版本
 	for i := len(versions) - 1; i >= 0; i-- {
 		coll := versions[i]
+
+		// 匹配集合名称和文档ID
 		if coll.Name == collName && coll.Doc.DID == id {
+			// 设置版本号（转换为uint64）
 			*version = uint64(coll.Doc.Version)
+
+			// 设置版本ID（MongoDB ObjectID的十六进制表示）
 			*versionID = coll.Doc.ID.Hex()
+
+			// 找到匹配的版本后立即返回
 			return
 		}
 	}
+	// 如果没有找到匹配的版本，版本信息保持原值
 }
 
+// setSortVersion 设置排序版本信息
+//
+// 除了设置基础版本信息外，还设置排序相关的版本信息。
+// 排序版本用于跟踪数据排序顺序的变更，支持更精细的增量同步。
+//
+// 处理流程：
+// 1. 从版本上下文获取所有版本记录
+// 2. 遍历版本记录，匹配集合名称和文档ID
+// 3. 设置基础版本号和版本ID
+// 4. 查找排序变更的版本记录
+// 5. 设置排序版本号
+//
+// 参数说明：
+// - version: 指向基础版本号的指针
+// - versionID: 指向版本ID的指针
+// - collName: 集合名称
+// - id: 文档ID
+// - sortVersion: 指向排序版本号的指针
+//
+// 排序版本机制：
+// - 当数据的排序顺序发生变化时，会记录排序版本
+// - 排序版本独立于基础版本，支持更精细的同步控制
+// - model.VersionSortChangeID 标识排序变更事件
+//
+// 使用场景：
+// - 群组成员列表排序变更
+// - 好友列表排序变更
+// - 需要维护排序状态的数据同步
+//
+// 版本类型：
+// - 基础版本：数据内容的变更版本
+// - 排序版本：数据排序的变更版本
 func (g *NotificationSender) setSortVersion(ctx context.Context, version *uint64, versionID *string, collName string, id string, sortVersion *uint64) {
+	// 从版本上下文获取所有版本记录
 	versions := versionctx.GetVersionLog(ctx).Get()
+
+	// 遍历版本记录，查找匹配的集合和文档
 	for _, coll := range versions {
 		if coll.Name == collName && coll.Doc.DID == id {
-			*version = uint64(coll.Doc.Version)
-			*versionID = coll.Doc.ID.Hex()
+			// 设置基础版本信息
+			*version = uint64(coll.Doc.Version) // 基础版本号
+			*versionID = coll.Doc.ID.Hex()      // 版本ID
+
+			// 查找排序变更的版本记录
 			for _, elem := range coll.Doc.Logs {
 				if elem.EID == model.VersionSortChangeID {
+					// 设置排序版本号
 					*sortVersion = uint64(elem.Version)
 				}
 			}
@@ -472,31 +775,115 @@ func (g *NotificationSender) setSortVersion(ctx context.Context, version *uint64
 	}
 }
 
+// GroupCreatedNotification 群组创建通知
+//
+// 当群组创建成功后，向所有初始成员发送群组创建通知。
+// 这是群组生命周期的第一个通知，标志着群组的正式建立。
+//
+// 通知内容：
+// - 群组基本信息（名称、头像、介绍等）
+// - 创建者信息（操作用户）
+// - 群组成员版本信息（用于增量同步）
+// - 创建时间和相关元数据
+//
+// 处理流程：
+// 1. 填充操作用户（群组创建者）信息
+// 2. 设置群组成员版本信息
+// 3. 向群组所有成员发送创建通知
+//
+// 参数说明：
+// - tips: 群组创建通知的详细信息
+// - SendMessage: 是否发送消息到聊天记录（可选参数）
+//
+// 通知特点：
+// - 群组级通知：发送给群组内所有成员
+// - 包含版本信息：支持客户端增量同步
+// - 可选消息记录：根据配置决定是否保存到聊天记录
+//
+// 错误处理：
+// - 使用defer确保错误被正确记录
+// - 填充用户信息失败时提前返回
+// - 记录详细的错误日志便于问题排查
+//
+// 使用场景：
+// - 用户创建新群组后的通知
+// - 管理员批量创建群组的通知
+// - 群组恢复或迁移后的通知
 func (g *NotificationSender) GroupCreatedNotification(ctx context.Context, tips *sdkws.GroupCreatedTips, SendMessage *bool) {
 	var err error
+
+	// 使用defer确保错误被正确记录和处理
 	defer func() {
 		if err != nil {
 			log.ZError(ctx, stringutil.GetFuncName(1)+" failed", err)
 		}
 	}()
+
+	// 填充操作用户（群组创建者）的详细信息
 	if err = g.fillOpUser(ctx, &tips.OpUser, tips.Group.GroupID); err != nil {
 		return
 	}
+
+	// 设置群组成员版本信息，用于客户端增量同步
 	g.setVersion(ctx, &tips.GroupMemberVersion, &tips.GroupMemberVersionID, database.GroupMemberVersionName, tips.Group.GroupID)
+
+	// 发送群组创建通知给所有群组成员
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), tips.Group.GroupID, constant.GroupCreatedNotification, tips, notification.WithSendMessage(SendMessage))
 }
 
+// GroupInfoSetNotification 群组信息设置通知
+//
+// 当群组的基本信息发生变更时，向所有群组成员发送信息变更通知。
+// 包括群组名称、头像、介绍、公告等基本信息的修改。
+//
+// 通知内容：
+// - 变更后的群组信息
+// - 操作者信息（谁修改了群组信息）
+// - 群组成员版本信息
+// - 变更时间和相关元数据
+//
+// 处理流程：
+// 1. 填充操作用户信息
+// 2. 设置群组成员版本信息
+// 3. 向群组所有成员发送信息变更通知
+//
+// 参数说明：
+// - tips: 群组信息设置通知的详细信息
+//
+// 通知特点：
+// - 群组级通知：通知所有群组成员
+// - 包含用户名获取：自动获取相关用户的显示名称
+// - 版本同步：支持客户端增量更新群组信息
+//
+// 信息变更类型：
+// - 群组名称修改
+// - 群组头像更换
+// - 群组介绍更新
+// - 群组设置调整
+//
+// 使用场景：
+// - 群主或管理员修改群组信息
+// - 系统自动更新群组信息
+// - 群组信息批量修改
 func (g *NotificationSender) GroupInfoSetNotification(ctx context.Context, tips *sdkws.GroupInfoSetTips) {
 	var err error
+
+	// 使用defer确保错误被正确记录
 	defer func() {
 		if err != nil {
 			log.ZError(ctx, stringutil.GetFuncName(1)+" failed", err)
 		}
 	}()
+
+	// 填充操作用户的详细信息
 	if err = g.fillOpUser(ctx, &tips.OpUser, tips.Group.GroupID); err != nil {
 		return
 	}
+
+	// 设置群组成员版本信息，用于增量同步
 	g.setVersion(ctx, &tips.GroupMemberVersion, &tips.GroupMemberVersionID, database.GroupMemberVersionName, tips.Group.GroupID)
+
+	// 发送群组信息设置通知，包含用户名获取功能
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), tips.Group.GroupID, constant.GroupInfoSetNotification, tips, notification.WithRpcGetUserName())
 }
 
