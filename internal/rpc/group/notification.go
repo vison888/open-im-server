@@ -887,6 +887,34 @@ func (g *NotificationSender) GroupInfoSetNotification(ctx context.Context, tips 
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), tips.Group.GroupID, constant.GroupInfoSetNotification, tips, notification.WithRpcGetUserName())
 }
 
+// GroupInfoSetNameNotification 群组名称设置通知
+//
+// 当群组名称发生变更时，向所有群组成员发送名称变更通知。
+// 这是群组信息变更通知的特化版本，专门处理群组名称的修改。
+//
+// 通知内容：
+// - 变更后的群组名称
+// - 操作者信息（谁修改了群组名称）
+// - 群组成员版本信息
+// - 变更时间和相关元数据
+//
+// 处理流程：
+// 1. 填充操作用户信息
+// 2. 设置群组成员版本信息
+// 3. 向群组所有成员发送名称变更通知
+//
+// 参数说明：
+// - tips: 群组名称设置通知的详细信息
+//
+// 通知特点：
+// - 群组级通知：通知所有群组成员
+// - 版本同步：支持客户端增量更新群组信息
+// - 实时推送：确保所有成员及时了解名称变更
+//
+// 使用场景：
+// - 群主或管理员修改群组名称
+// - 系统自动更新群组名称
+// - 群组重命名操作
 func (g *NotificationSender) GroupInfoSetNameNotification(ctx context.Context, tips *sdkws.GroupInfoSetNameTips) {
 	var err error
 	defer func() {
@@ -901,6 +929,36 @@ func (g *NotificationSender) GroupInfoSetNameNotification(ctx context.Context, t
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), tips.Group.GroupID, constant.GroupInfoSetNameNotification, tips)
 }
 
+// GroupInfoSetAnnouncementNotification 群组公告设置通知
+//
+// 当群组公告发生变更时，向所有群组成员发送公告变更通知。
+// 群组公告是重要的群组信息，变更时需要确保所有成员都能及时收到通知。
+//
+// 通知内容：
+// - 变更后的群组公告内容
+// - 操作者信息（谁修改了群组公告）
+// - 群组成员版本信息
+// - 变更时间和相关元数据
+//
+// 处理流程：
+// 1. 填充操作用户信息
+// 2. 设置群组成员版本信息
+// 3. 向群组所有成员发送公告变更通知
+//
+// 参数说明：
+// - tips: 群组公告设置通知的详细信息
+// - sendMessage: 是否发送消息到聊天记录（可选参数）
+//
+// 通知特点：
+// - 群组级通知：通知所有群组成员
+// - 包含用户名获取：自动获取相关用户的显示名称
+// - 版本同步：支持客户端增量更新群组信息
+// - 可选消息记录：根据配置决定是否保存到聊天记录
+//
+// 使用场景：
+// - 群主或管理员发布新公告
+// - 群主或管理员修改现有公告
+// - 群主或管理员删除群组公告
 func (g *NotificationSender) GroupInfoSetAnnouncementNotification(ctx context.Context, tips *sdkws.GroupInfoSetAnnouncementTips, sendMessage *bool) {
 	var err error
 	defer func() {
@@ -915,10 +973,60 @@ func (g *NotificationSender) GroupInfoSetAnnouncementNotification(ctx context.Co
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), tips.Group.GroupID, constant.GroupInfoSetAnnouncementNotification, tips, notification.WithRpcGetUserName(), notification.WithSendMessage(sendMessage))
 }
 
+// uuid 生成唯一标识符
+//
+// 生成一个新的UUID字符串，用于标识通知消息的唯一性。
+// 在群组通知系统中，每个通知都需要一个唯一的标识符来避免重复处理。
+//
+// 返回值：
+// - string: UUID字符串格式的唯一标识符
+//
+// 使用场景：
+// - 群组申请通知的唯一标识
+// - 通知消息的去重处理
+// - 通知状态的跟踪和管理
+//
+// 实现说明：
+// - 使用Google UUID库生成标准的UUID v4
+// - 返回格式为 "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+// - 保证全局唯一性和随机性
 func (g *NotificationSender) uuid() string {
 	return uuid.New().String()
 }
 
+// getGroupRequest 获取群组申请信息
+//
+// 根据群组ID和用户ID获取群组申请的详细信息，包括申请记录和申请者的用户信息。
+// 这是群组申请通知系统中获取申请详情的核心方法。
+//
+// 处理流程：
+// 1. 从数据库查询群组申请记录
+// 2. 获取申请者的用户基础信息
+// 3. 验证用户信息的有效性
+// 4. 转换为标准的Protobuf格式返回
+//
+// 参数说明：
+// - groupID: 群组ID，指定要查询的群组
+// - userID: 用户ID，指定申请者
+//
+// 返回值：
+// - *sdkws.GroupRequest: 群组申请的完整信息
+// - error: 查询过程中的错误信息
+//
+// 数据整合：
+// - 申请记录：申请时间、申请消息、处理状态等
+// - 用户信息：申请者的昵称、头像、基础信息
+// - 群组信息：相关的群组基础信息
+//
+// 错误处理：
+// - 申请记录不存在：返回数据库查询错误
+// - 用户不存在：返回用户未找到错误
+// - 数据格式异常：进行类型转换和兼容处理
+//
+// 使用场景：
+// - 群组申请通知的信息填充
+// - 申请处理结果通知的数据准备
+// - 管理员查看申请详情
 func (g *NotificationSender) getGroupRequest(ctx context.Context, groupID string, userID string) (*sdkws.GroupRequest, error) {
 	request, err := g.db.TakeGroupRequest(ctx, groupID, userID)
 	if err != nil {
@@ -943,6 +1051,44 @@ func (g *NotificationSender) getGroupRequest(ctx context.Context, groupID string
 	return convert.Db2PbGroupRequest(request, info, nil), nil
 }
 
+// JoinGroupApplicationNotification 加入群组申请通知
+//
+// 当用户申请加入群组时，向群组管理员（群主和管理员）发送申请通知。
+// 这是群组申请流程的第一步，确保管理员能及时处理入群申请。
+//
+// 通知内容：
+// - 群组基本信息
+// - 申请者信息（用户基础信息）
+// - 申请消息内容
+// - 申请的唯一标识符
+// - 完整的申请记录信息
+//
+// 处理流程：
+// 1. 获取群组申请的详细信息
+// 2. 获取群组基本信息
+// 3. 获取邀请人信息（如果有）
+// 4. 获取群组管理员列表（群主+管理员）
+// 5. 向所有相关人员发送申请通知
+//
+// 参数说明：
+// - req: 加入群组的请求信息
+// - dbReq: 数据库中的申请记录
+//
+// 通知接收者：
+// - 群主：有权限处理申请
+// - 管理员：有权限处理申请
+// - 邀请人：了解申请状态（如果有邀请人）
+// - 操作者：申请提交确认
+//
+// 错误处理：
+// - 申请信息获取失败：记录错误日志并返回
+// - 群组信息获取失败：停止通知发送
+// - 用户信息获取失败：停止通知发送
+//
+// 使用场景：
+// - 用户主动申请加入群组
+// - 通过邀请链接申请加入
+// - 扫码申请加入群组
 func (g *NotificationSender) JoinGroupApplicationNotification(ctx context.Context, req *pbgroup.JoinGroupReq, dbReq *model.GroupRequest) {
 	var err error
 	defer func() {
@@ -982,6 +1128,45 @@ func (g *NotificationSender) JoinGroupApplicationNotification(ctx context.Contex
 	}
 }
 
+// MemberQuitNotification 成员退出通知
+//
+// 当群组成员主动退出群组时，向群组内所有其他成员发送退出通知。
+// 这确保了群组成员能及时了解成员变动情况。
+//
+// 通知内容：
+// - 群组基本信息
+// - 退出成员的完整信息
+// - 群组成员版本信息（用于增量同步）
+// - 退出时间和相关元数据
+//
+// 处理流程：
+// 1. 获取群组基本信息
+// 2. 构建成员退出通知消息
+// 3. 设置群组成员版本信息
+// 4. 向群组所有成员发送退出通知
+//
+// 参数说明：
+// - member: 退出的群组成员完整信息
+//
+// 通知特点：
+// - 群组级通知：发送给群组内所有成员
+// - 包含版本信息：支持客户端增量同步成员列表
+// - 实时推送：确保成员变动及时同步
+//
+// 版本控制：
+// - 更新群组成员版本号
+// - 支持客户端增量获取成员变更
+// - 维护数据一致性
+//
+// 使用场景：
+// - 用户主动退出群组
+// - 用户通过客户端离开群组
+// - 批量退出操作的单个通知
+//
+// 注意事项：
+// - 退出成员不会收到此通知（已不在群组中）
+// - 通知发送给群组内剩余的所有成员
+// - 包含完整的成员信息便于客户端处理
 func (g *NotificationSender) MemberQuitNotification(ctx context.Context, member *sdkws.GroupMemberFullInfo) {
 	var err error
 	defer func() {
@@ -999,6 +1184,47 @@ func (g *NotificationSender) MemberQuitNotification(ctx context.Context, member 
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), member.GroupID, constant.MemberQuitNotification, tips)
 }
 
+// GroupApplicationAcceptedNotification 群组申请通过通知
+//
+// 当群组管理员通过用户的入群申请时，向相关人员发送申请通过通知。
+// 这是群组申请流程的成功结果通知，确保申请者和管理员都了解处理结果。
+//
+// 通知内容：
+// - 群组基本信息
+// - 处理申请的操作者信息
+// - 处理消息（管理员的回复）
+// - 申请的唯一标识符
+// - 完整的申请记录信息
+// - 接收者角色标识
+//
+// 处理流程：
+// 1. 获取群组申请的详细信息
+// 2. 获取群组基本信息
+// 3. 获取群组管理员列表
+// 4. 填充操作者信息
+// 5. 向申请者和管理员发送通知（区分接收者角色）
+//
+// 参数说明：
+// - req: 群组申请响应请求信息
+//
+// 通知接收者：
+// - 申请者：收到申请通过的好消息
+// - 群主：了解申请处理结果
+// - 管理员：了解申请处理结果
+//
+// 接收者角色：
+// - applicantReceiver：申请者角色，显示"您的申请已通过"
+// - adminReceiver：管理员角色，显示"申请已被处理"
+//
+// 错误处理：
+// - 申请信息获取失败：记录错误日志并返回
+// - 群组信息获取失败：停止通知发送
+// - 操作者信息填充失败：停止通知发送
+//
+// 使用场景：
+// - 管理员通过入群申请
+// - 自动审批系统通过申请
+// - 批量处理申请的单个通知
 func (g *NotificationSender) GroupApplicationAcceptedNotification(ctx context.Context, req *pbgroup.GroupApplicationResponseReq) {
 	var err error
 	defer func() {
@@ -1043,6 +1269,52 @@ func (g *NotificationSender) GroupApplicationAcceptedNotification(ctx context.Co
 	}
 }
 
+// GroupApplicationRejectedNotification 群组申请拒绝通知
+//
+// 当群组管理员拒绝用户的入群申请时，向相关人员发送申请拒绝通知。
+// 这是群组申请流程的拒绝结果通知，确保申请者了解处理结果，管理员了解处理状态。
+//
+// 通知内容：
+// - 群组基本信息
+// - 处理申请的操作者信息
+// - 拒绝消息（管理员的拒绝理由）
+// - 申请的唯一标识符
+// - 完整的申请记录信息
+// - 接收者角色标识
+//
+// 处理流程：
+// 1. 获取群组申请的详细信息
+// 2. 获取群组基本信息
+// 3. 获取群组管理员列表
+// 4. 填充操作者信息
+// 5. 向申请者和管理员发送通知（区分接收者角色）
+//
+// 参数说明：
+// - req: 群组申请响应请求信息
+//
+// 通知接收者：
+// - 申请者：收到申请被拒绝的通知和理由
+// - 群主：了解申请处理结果
+// - 管理员：了解申请处理结果
+//
+// 接收者角色：
+// - applicantReceiver：申请者角色，显示"您的申请已被拒绝"
+// - adminReceiver：管理员角色，显示"申请已被处理"
+//
+// 错误处理：
+// - 申请信息获取失败：记录错误日志并返回
+// - 群组信息获取失败：停止通知发送
+// - 操作者信息填充失败：停止通知发送
+//
+// 使用场景：
+// - 管理员拒绝入群申请
+// - 自动审批系统拒绝申请
+// - 批量处理申请的单个拒绝通知
+//
+// 注意事项：
+// - 拒绝理由应当友好和建设性
+// - 申请者可能会根据拒绝理由重新申请
+// - 管理员需要了解拒绝操作的执行情况
 func (g *NotificationSender) GroupApplicationRejectedNotification(ctx context.Context, req *pbgroup.GroupApplicationResponseReq) {
 	var err error
 	defer func() {
@@ -1087,6 +1359,49 @@ func (g *NotificationSender) GroupApplicationRejectedNotification(ctx context.Co
 	}
 }
 
+// GroupOwnerTransferredNotification 群主转让通知
+//
+// 当群主将群组所有权转让给其他成员时，向群组所有成员发送群主转让通知。
+// 这是群组管理中的重要变更，需要确保所有成员了解群组管理权的变化。
+//
+// 通知内容：
+// - 群组基本信息
+// - 操作者信息（执行转让的用户）
+// - 新群主信息（接收群主权限的成员）
+// - 原群主信息（转让群主权限的成员）
+// - 群组成员版本信息
+//
+// 处理流程：
+// 1. 获取群组基本信息
+// 2. 获取相关用户的群组成员信息（操作者、新群主、原群主）
+// 3. 构建群主转让通知消息
+// 4. 填充操作者信息
+// 5. 设置群组成员版本信息
+// 6. 向群组所有成员发送通知
+//
+// 参数说明：
+// - req: 群主转让请求信息
+//
+// 涉及角色：
+// - 操作者：执行转让操作的用户（通常是原群主）
+// - 新群主：接收群主权限的成员
+// - 原群主：转让群主权限的成员
+// - 群组成员：需要了解管理权变更的所有成员
+//
+// 权限变更：
+// - 原群主降级为普通成员或管理员
+// - 新群主获得最高管理权限
+// - 群组管理结构发生变化
+//
+// 版本控制：
+// - 更新群组成员版本信息
+// - 支持客户端增量同步权限变更
+// - 维护群组管理状态一致性
+//
+// 使用场景：
+// - 群主主动转让群组
+// - 群主退出前的权限转移
+// - 群组管理权的重新分配
 func (g *NotificationSender) GroupOwnerTransferredNotification(ctx context.Context, req *pbgroup.TransferGroupOwnerReq) {
 	var err error
 	defer func() {
@@ -1118,6 +1433,47 @@ func (g *NotificationSender) GroupOwnerTransferredNotification(ctx context.Conte
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), group.GroupID, constant.GroupOwnerTransferredNotification, tips)
 }
 
+// MemberKickedNotification 成员被踢出通知
+//
+// 当群组管理员将成员踢出群组时，向群组所有成员发送成员被踢出通知。
+// 这确保了群组成员能及时了解成员变动和管理操作。
+//
+// 通知内容：
+// - 群组基本信息
+// - 操作者信息（执行踢出操作的管理员）
+// - 被踢出成员的信息列表
+// - 群组成员版本信息
+// - 操作时间和相关元数据
+//
+// 处理流程：
+// 1. 填充操作者（管理员）信息
+// 2. 设置群组成员版本信息
+// 3. 向群组所有成员发送踢出通知
+//
+// 参数说明：
+// - tips: 成员被踢出通知的详细信息
+// - SendMessage: 是否发送消息到聊天记录（可选参数）
+//
+// 通知特点：
+// - 群组级通知：发送给群组内所有成员
+// - 包含版本信息：支持客户端增量同步成员列表
+// - 可选消息记录：根据配置决定是否保存到聊天记录
+// - 管理操作记录：记录管理员的操作行为
+//
+// 权限验证：
+// - 只有群主和管理员可以踢出成员
+// - 群主可以踢出任何成员（包括管理员）
+// - 管理员只能踢出普通成员
+//
+// 使用场景：
+// - 管理员踢出违规成员
+// - 群主清理不活跃成员
+// - 批量管理群组成员
+//
+// 注意事项：
+// - 被踢出的成员不会收到此通知（已不在群组中）
+// - 通知包含被踢出成员的完整信息
+// - 支持批量踢出的通知处理
 func (g *NotificationSender) MemberKickedNotification(ctx context.Context, tips *sdkws.MemberKickedTips, SendMessage *bool) {
 	var err error
 	defer func() {
@@ -1132,10 +1488,77 @@ func (g *NotificationSender) MemberKickedNotification(ctx context.Context, tips 
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), tips.Group.GroupID, constant.MemberKickedNotification, tips, notification.WithSendMessage(SendMessage))
 }
 
+// GroupApplicationAgreeMemberEnterNotification 群组申请同意成员进入通知（公开接口）
+//
+// 这是群组申请同意成员进入通知的公开接口，内部调用私有实现方法。
+// 当群组申请被同意后，新成员正式加入群组时触发此通知。
+//
+// 参数说明：
+// - groupID: 群组ID
+// - SendMessage: 是否发送消息到聊天记录
+// - invitedOpUserID: 邀请操作者用户ID
+// - entrantUserID: 进入群组的用户ID列表（可变参数）
+//
+// 返回值：
+// - error: 处理过程中的错误信息
+//
+// 设计模式：
+// - 外观模式：提供简化的公开接口
+// - 委托模式：将具体实现委托给私有方法
+//
+// 使用场景：
+// - 外部服务调用群组成员进入通知
+// - API接口层的统一入口
+// - 权限控制和参数验证的统一处理
 func (g *NotificationSender) GroupApplicationAgreeMemberEnterNotification(ctx context.Context, groupID string, SendMessage *bool, invitedOpUserID string, entrantUserID ...string) error {
 	return g.groupApplicationAgreeMemberEnterNotification(ctx, groupID, SendMessage, invitedOpUserID, entrantUserID...)
 }
 
+// groupApplicationAgreeMemberEnterNotification 群组申请同意成员进入通知（私有实现）
+//
+// 当群组申请被同意后，新成员正式加入群组时的完整通知处理逻辑。
+// 这是一个复杂的流程，涉及会话创建、历史消息处理、通知发送等多个步骤。
+//
+// 处理流程：
+// 1. 历史消息处理：根据配置决定新成员是否能看到历史消息
+// 2. 会话创建：为新成员创建群组会话
+// 3. 群组信息获取：获取群组基本信息
+// 4. 成员信息获取：获取新加入成员的详细信息
+// 5. 通知构建：构建成员邀请通知消息
+// 6. 用户信息填充：填充操作者和邀请者信息
+// 7. 版本设置：设置群组成员版本信息
+// 8. 通知发送：向群组所有成员发送邀请通知
+//
+// 参数说明：
+// - groupID: 群组ID
+// - SendMessage: 是否发送消息到聊天记录
+// - invitedOpUserID: 邀请操作者用户ID
+// - entrantUserID: 进入群组的用户ID列表
+//
+// 历史消息处理：
+// - EnableHistoryForNewMembers=false: 新成员看不到加入前的历史消息
+// - EnableHistoryForNewMembers=true: 新成员可以看到所有历史消息
+// - 通过设置MinSeq控制消息可见范围
+//
+// 会话管理：
+// - 为新成员创建群组会话
+// - 确保新成员能正常接收群组消息
+// - 同步会话状态和配置
+//
+// 角色区分：
+// - 操作者：当前执行操作的用户
+// - 邀请者：实际发出邀请的用户（可能与操作者不同）
+// - 新成员：被邀请加入群组的用户列表
+//
+// 错误处理：
+// - 会话创建失败：返回错误，停止后续处理
+// - 信息获取失败：返回错误，记录详细日志
+// - 通知发送失败：记录错误但不影响核心流程
+//
+// 使用场景：
+// - 管理员同意用户入群申请
+// - 成员邀请其他用户加入群组
+// - 批量添加成员到群组
 func (g *NotificationSender) groupApplicationAgreeMemberEnterNotification(ctx context.Context, groupID string, SendMessage *bool, invitedOpUserID string, entrantUserID ...string) error {
 	var err error
 	defer func() {
@@ -1229,6 +1652,48 @@ func (g *NotificationSender) MemberEnterNotification(ctx context.Context, groupI
 	return nil
 }
 
+// GroupDismissedNotification 群组解散通知
+//
+// 当群主解散群组时，向群组所有成员发送群组解散通知。
+// 这是群组生命周期的终结通知，确保所有成员了解群组的解散状态。
+//
+// 通知内容：
+// - 群组基本信息
+// - 操作者信息（执行解散操作的群主）
+// - 解散时间和相关元数据
+// - 解散原因（如果有）
+//
+// 处理流程：
+// 1. 填充操作者（群主）信息
+// 2. 向群组所有成员发送解散通知
+//
+// 参数说明：
+// - tips: 群组解散通知的详细信息
+// - SendMessage: 是否发送消息到聊天记录（可选参数）
+//
+// 通知特点：
+// - 群组级通知：发送给群组内所有成员
+// - 可选消息记录：根据配置决定是否保存到聊天记录
+// - 最终通知：群组解散后不再有其他通知
+//
+// 权限要求：
+// - 只有群主可以解散群组
+// - 系统管理员可以强制解散群组
+//
+// 后续处理：
+// - 群组解散后，所有成员将被移除
+// - 群组会话将被标记为已解散
+// - 群组相关数据将被清理或归档
+//
+// 使用场景：
+// - 群主主动解散群组
+// - 系统管理员强制解散违规群组
+// - 群组到期自动解散
+//
+// 注意事项：
+// - 这是群组的最后一个通知
+// - 解散后群组无法恢复
+// - 成员需要及时保存重要信息
 func (g *NotificationSender) GroupDismissedNotification(ctx context.Context, tips *sdkws.GroupDismissedTips, SendMessage *bool) {
 	var err error
 	defer func() {
@@ -1242,6 +1707,55 @@ func (g *NotificationSender) GroupDismissedNotification(ctx context.Context, tip
 	g.Notification(ctx, mcontext.GetOpUserID(ctx), tips.Group.GroupID, constant.GroupDismissedNotification, tips, notification.WithSendMessage(SendMessage))
 }
 
+// GroupMemberMutedNotification 群组成员禁言通知
+//
+// 当群组管理员对特定成员执行禁言操作时，向群组所有成员发送成员禁言通知。
+// 这确保了群组成员了解禁言状态，维护群组秩序。
+//
+// 通知内容：
+// - 群组基本信息
+// - 操作者信息（执行禁言的管理员）
+// - 被禁言成员信息
+// - 禁言时长（秒数）
+// - 群组成员版本信息
+//
+// 处理流程：
+// 1. 获取群组基本信息
+// 2. 获取操作者和被禁言成员的信息
+// 3. 构建成员禁言通知消息
+// 4. 填充操作者信息
+// 5. 设置群组成员版本信息
+// 6. 向群组所有成员发送禁言通知
+//
+// 参数说明：
+// - groupID: 群组ID
+// - groupMemberUserID: 被禁言成员的用户ID
+// - mutedSeconds: 禁言时长（秒数，0表示永久禁言）
+//
+// 禁言机制：
+// - 禁言期间成员无法发送消息
+// - 禁言时长可以是临时的或永久的
+// - 管理员可以随时解除禁言
+//
+// 权限要求：
+// - 群主可以禁言任何成员（包括管理员）
+// - 管理员可以禁言普通成员
+// - 普通成员无法执行禁言操作
+//
+// 版本控制：
+// - 更新群组成员版本信息
+// - 支持客户端增量同步禁言状态
+// - 维护成员状态一致性
+//
+// 使用场景：
+// - 管理员对违规成员进行禁言
+// - 临时禁言处理争议
+// - 维护群组讨论秩序
+//
+// 注意事项：
+// - 禁言时长为0表示永久禁言
+// - 被禁言成员仍可接收消息，但无法发送
+// - 禁言状态会同步到所有客户端
 func (g *NotificationSender) GroupMemberMutedNotification(ctx context.Context, groupID, groupMemberUserID string, mutedSeconds uint32) {
 	var err error
 	defer func() {
