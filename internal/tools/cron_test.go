@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"testing"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discoveryregister"
 	pbconversation "github.com/openimsdk/protocol/conversation"
@@ -12,7 +14,6 @@ import (
 	"github.com/robfig/cron/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"testing"
 )
 
 func TestName(t *testing.T) {
@@ -23,7 +24,7 @@ func TestName(t *testing.T) {
 			Address:       []string{"localhost:12379"},
 		},
 	}
-	client, err := kdisc.NewDiscoveryRegister(conf, "source")
+	client, err := kdisc.NewDiscoveryRegister(conf, nil, nil)
 	if err != nil {
 		panic(err)
 	}
