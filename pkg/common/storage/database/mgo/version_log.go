@@ -1,3 +1,66 @@
+// Package mgo 提供基于MongoDB的版本日志存储实现
+//
+// 版本日志系统是OpenIM增量同步机制的核心组件，用于支持客户端的增量数据同步。
+// 通过维护数据变更的版本信息，客户端可以只获取自上次同步以来的变更数据，
+// 大大减少网络传输量和提升同步效率。
+//
+// **核心设计理念：**
+//
+// 1. **版本驱动同步**
+//   - 每次数据变更都会递增版本号
+//   - 客户端记录最后同步的版本号
+//   - 服务端返回指定版本后的所有变更
+//
+// 2. **原子性保证**
+//   - 使用MongoDB的原子操作确保版本更新的一致性
+//   - 支持事务处理，避免数据不一致
+//   - 通过乐观锁机制处理并发更新
+//
+// 3. **存储优化**
+//   - 使用聚合管道进行高效的数据处理
+//   - 支持批量操作减少数据库往返
+//   - 自动清理过期的版本日志数据
+//
+// **数据结构设计：**
+//
+// VersionLog文档结构：
+//
+//	{
+//	  "_id": ObjectId,           // MongoDB文档ID
+//	  "d_id": "domain_id",       // 领域ID（如群组ID、用户ID）
+//	  "version": 123,            // 当前版本号
+//	  "deleted": 0,              // 删除版本号（用于软删除）
+//	  "last_update": ISODate,    // 最后更新时间
+//	  "logs": [                  // 变更日志数组
+//	    {
+//	      "e_id": "element_id",  // 元素ID（如成员ID）
+//	      "state": 1,            // 变更状态（增加、修改、删除）
+//	      "version": 123,        // 变更版本号
+//	      "last_update": ISODate // 变更时间
+//	    }
+//	  ]
+//	}
+//
+// **版本管理策略：**
+//
+// - 版本号递增：每次变更版本号+1，确保时序正确
+// - 软删除机制：通过deleted字段标记删除，支持恢复
+// - 批量处理：多个变更可以在同一版本中批量处理
+// - 自动清理：定期清理过期的版本日志，控制存储空间
+//
+// **同步机制：**
+//
+// 1. 客户端请求：携带lastVersion参数
+// 2. 服务端查询：返回version > lastVersion的所有变更
+// 3. 客户端应用：按版本顺序应用变更
+// 4. 版本更新：客户端更新本地的lastVersion
+//
+// **性能优化：**
+//
+// - 索引优化：在d_id字段上建立唯一索引
+// - 聚合查询：使用MongoDB聚合管道提升查询性能
+// - 内存管理：合理控制单次返回的日志数量
+// - 并发控制：通过MongoDB的原子操作避免锁竞争
 package mgo
 
 import (
@@ -26,15 +89,15 @@ func NewVersionLog(coll *mongo.Collection) (database.VersionLog, error) {
 }
 
 type VersionLogMgo struct {
-	coll *mongo.Collection
+	coll *mongo.Collection // MongoDB集合实例，存储版本日志数据
 }
 
 func (l *VersionLogMgo) initIndex(ctx context.Context) error {
 	_, err := l.coll.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.M{
-			"d_id": 1,
+			"d_id": 1, // 在d_id字段上创建升序索引
 		},
-		Options: options.Index().SetUnique(true),
+		Options: options.Index().SetUnique(true), // 设置唯一性约束
 	})
 
 	return err

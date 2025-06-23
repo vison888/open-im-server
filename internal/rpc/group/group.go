@@ -916,6 +916,28 @@ func (g *groupServer) checkAdminOrInGroup(ctx context.Context, groupID string) e
 	return nil
 }
 
+// GetGroupMemberList 获取群组成员列表
+//
+// 此方法用于分页获取群组成员列表，支持关键词搜索功能。
+// 只有群组成员或系统管理员才能查看群组成员列表。
+//
+// 业务逻辑：
+// 1. 权限验证：检查操作者是否有权限查看该群组成员列表
+// 2. 查询模式：根据是否提供关键词选择分页查询或搜索查询
+// 3. 数据填充：填充成员的用户基本信息（昵称、头像等）
+// 4. 格式转换：将数据库模型转换为API响应格式
+//
+// 查询模式：
+// - 普通分页：获取所有成员的分页列表
+// - 关键词搜索：根据昵称或用户ID模糊搜索成员
+//
+// 权限要求：
+// - 群组成员：可以查看同群成员列表
+// - 系统管理员：可以查看任何群组的成员列表
+//
+// 返回数据：
+// - 成员总数
+// - 当前页成员详细信息列表
 func (g *groupServer) GetGroupMemberList(ctx context.Context, req *pbgroup.GetGroupMemberListReq) (*pbgroup.GetGroupMemberListResp, error) {
 	if err := g.checkAdminOrInGroup(ctx, req.GroupID); err != nil {
 		return nil, err
@@ -1122,6 +1144,29 @@ func (g *groupServer) KickGroupMember(ctx context.Context, req *pbgroup.KickGrou
 	return &pbgroup.KickGroupMemberResp{}, nil
 }
 
+// GetGroupMembersInfo 获取指定群组成员信息
+//
+// 此方法用于批量获取群组中指定用户的详细成员信息，包括群内角色、
+// 加入时间、禁言状态等完整信息。
+//
+// 业务逻辑：
+// 1. 参数验证：用户ID列表非空，群组ID非空
+// 2. 权限验证：检查操作者是否有权限查看该群组信息
+// 3. 信息获取：调用内部方法获取指定用户的群组成员信息
+// 4. 数据返回：返回格式化的成员信息列表
+//
+// 使用场景：
+// - 查看特定成员的详细信息
+// - 批量获取多个成员的信息
+// - 权限验证和角色确认
+//
+// 权限要求：
+// - 必须是群组成员或系统管理员
+// - 只能查看同群成员的信息
+//
+// 返回数据：
+// - 指定用户的群组成员完整信息列表
+// - 包含角色、加入时间、禁言状态等详细信息
 func (g *groupServer) GetGroupMembersInfo(ctx context.Context, req *pbgroup.GetGroupMembersInfoReq) (*pbgroup.GetGroupMembersInfoResp, error) {
 	if len(req.UserIDs) == 0 {
 		return nil, errs.ErrArgs.WrapMsg("userIDs empty")
@@ -1187,7 +1232,31 @@ func (g *groupServer) getGroupMembersInfo(ctx context.Context, groupID string, u
 	}), nil
 }
 
-// GetGroupApplicationList handles functions that get a list of group requests.
+// GetGroupApplicationList 获取群组申请列表
+//
+// 此方法用于获取指定群组的加群申请列表，支持按处理状态筛选和分页查询。
+// 主要用于群组管理员查看和处理加群申请。
+//
+// 业务逻辑：
+// 1. 群组ID处理：如果未指定群组ID，则查询用户管理的所有群组
+// 2. 权限验证：验证操作者是否有权限查看指定群组的申请
+// 3. 数据查询：根据群组ID和处理状态分页查询申请记录
+// 4. 信息聚合：获取申请用户信息、群组信息、群主信息等
+// 5. 数据转换：将数据库模型转换为API响应格式
+//
+// 权限规则：
+// - 群主：可以查看自己群组的所有申请
+// - 管理员：可以查看自己管理群组的所有申请
+// - 系统管理员：可以查看任何群组的申请
+//
+// 筛选条件：
+// - 群组ID列表：可指定多个群组
+// - 处理状态：待处理、已同意、已拒绝等
+// - 分页参数：支持分页查询
+//
+// 返回数据：
+// - 申请总数
+// - 申请详细信息列表（包含申请者、群组、处理状态等）
 func (g *groupServer) GetGroupApplicationList(ctx context.Context, req *pbgroup.GetGroupApplicationListReq) (*pbgroup.GetGroupApplicationListResp, error) {
 	var (
 		groupIDs []string
@@ -1268,6 +1337,29 @@ func (g *groupServer) GetGroupApplicationList(ctx context.Context, req *pbgroup.
 	return resp, nil
 }
 
+// GetGroupsInfo 获取多个群组的详细信息
+//
+// 此方法用于批量获取指定群组的详细信息，包括群组基本信息、
+// 成员数量、群主信息等完整数据。
+//
+// 业务逻辑：
+// 1. 参数验证：群组ID列表不能为空
+// 2. 批量查询：调用内部方法批量获取群组信息
+// 3. 数据返回：返回格式化的群组信息列表
+//
+// 使用场景：
+// - 客户端批量获取群组信息
+// - 群组列表展示需要详细信息
+// - 群组信息同步和缓存更新
+//
+// 性能优化：
+// - 使用批量查询避免N+1查询问题
+// - 内部方法实现了高效的数据聚合
+//
+// 返回数据：
+// - 群组基本信息：名称、头像、公告等
+// - 群组统计：成员数量、创建时间等
+// - 群主信息：群主用户ID等
 func (g *groupServer) GetGroupsInfo(ctx context.Context, req *pbgroup.GetGroupsInfoReq) (*pbgroup.GetGroupsInfoResp, error) {
 	if len(req.GroupIDs) == 0 {
 		return nil, errs.ErrArgs.WrapMsg("groupID is empty")
@@ -1281,6 +1373,32 @@ func (g *groupServer) GetGroupsInfo(ctx context.Context, req *pbgroup.GetGroupsI
 	}, nil
 }
 
+// GetGroupApplicationUnhandledCount 获取未处理的群组申请数量
+//
+// 此方法用于获取指定用户管理的所有群组中未处理的加群申请总数。
+// 主要用于客户端显示未处理申请的数量提醒。
+//
+// 业务逻辑：
+// 1. 权限验证：验证是否有权限查询该用户的未处理申请数量
+// 2. 群组查询：查找用户管理的所有群组ID（群主和管理员身份）
+// 3. 申请统计：统计这些群组中指定时间后的未处理申请数量
+// 4. 结果返回：返回未处理申请的总数
+//
+// 权限要求：
+// - 只能查询自己管理群组的申请数量
+// - 系统管理员可以查询任何用户的数据
+//
+// 时间筛选：
+// - 支持指定时间戳，只统计该时间之后的申请
+// - 用于增量统计和实时提醒
+//
+// 使用场景：
+// - 客户端红点提醒
+// - 管理面板数据统计
+// - 实时通知推送
+//
+// 返回数据：
+// - 未处理申请的总数量
 func (g *groupServer) GetGroupApplicationUnhandledCount(ctx context.Context, req *pbgroup.GetGroupApplicationUnhandledCountReq) (*pbgroup.GetGroupApplicationUnhandledCountResp, error) {
 	if err := authverify.CheckAccessV3(ctx, req.UserID, g.config.Share.IMAdminUserID); err != nil {
 		return nil, err
@@ -1367,6 +1485,37 @@ func (g *groupServer) getGroupsInfo(ctx context.Context, groupIDs []string) ([]*
 	}), nil
 }
 
+// GroupApplicationResponse 处理群组申请响应
+//
+// 此方法用于处理群组加入申请的审批，支持同意或拒绝申请。
+// 只有群主、管理员或系统管理员可以处理群组申请。
+//
+// 业务逻辑：
+// 1. 参数验证：处理结果必须是同意或拒绝
+// 2. 权限验证：验证操作者是否有权限处理该群组申请
+// 3. 申请状态检查：确认申请未被处理过
+// 4. 用户状态检查：验证申请用户是否已在群组中
+// 5. 处理逻辑：根据处理结果执行相应操作
+// 6. 通知发送：发送处理结果通知
+//
+// 处理结果：
+// - 同意申请：将用户添加到群组，发送欢迎通知
+// - 拒绝申请：仅更新申请状态，发送拒绝通知
+//
+// 权限规则：
+// - 群主：可以处理所有申请
+// - 管理员：可以处理所有申请
+// - 系统管理员：可以处理任何群组的申请
+//
+// 特殊处理：
+// - 用户已在群组中时，只更新申请状态
+// - Webhook回调支持业务逻辑扩展
+// - 邀请申请和主动申请的通知不同
+//
+// 安全考虑：
+// - 防止重复处理同一申请
+// - 验证用户仍然存在
+// - 确保申请记录的完整性
 func (g *groupServer) GroupApplicationResponse(ctx context.Context, req *pbgroup.GroupApplicationResponseReq) (*pbgroup.GroupApplicationResponseResp, error) {
 	if !datautil.Contain(req.HandleResult, constant.GroupResponseAgree, constant.GroupResponseRefuse) {
 		return nil, errs.ErrArgs.WrapMsg("HandleResult unknown")
@@ -1676,6 +1825,40 @@ func (g *groupServer) deleteMemberAndSetConversationSeq(ctx context.Context, gro
 	return g.conversationClient.SetConversationMaxSeq(ctx, conversationID, userIDs, maxSeq)
 }
 
+// SetGroupInfo 设置群组信息
+//
+// 此方法用于修改群组的基本信息，包括群名称、头像、公告、介绍等。
+// 只有群主、管理员或系统管理员可以修改群组信息。
+//
+// 业务逻辑：
+// 1. 权限验证：验证操作者是否有权限修改群组信息
+// 2. Webhook回调：执行修改前的业务逻辑扩展
+// 3. 群组状态检查：确认群组存在且未解散
+// 4. 信息更新：批量更新群组的各项信息
+// 5. 特殊处理：公告和群名称修改需要特殊通知
+// 6. 通知发送：向群组成员发送信息变更通知
+// 7. Webhook回调：执行修改后的业务逻辑扩展
+//
+// 可修改信息：
+// - 群组名称：群组显示名称
+// - 群组头像：群组头像URL
+// - 群组公告：群组公告内容
+// - 群组介绍：群组简介描述
+// - 扩展字段：自定义扩展信息
+//
+// 权限规则：
+// - 群主：可以修改所有群组信息
+// - 管理员：可以修改所有群组信息
+// - 系统管理员：可以修改任何群组信息
+//
+// 特殊处理：
+// - 公告修改会设置会话@类型为群公告
+// - 群名称修改会发送专门的名称变更通知
+// - 其他信息修改发送通用的信息变更通知
+//
+// 性能优化：
+// - 只更新变更的字段
+// - 批量处理多个字段的更新
 func (g *groupServer) SetGroupInfo(ctx context.Context, req *pbgroup.SetGroupInfoReq) (*pbgroup.SetGroupInfoResp, error) {
 	var opMember *model.GroupMember
 	if !authverify.IsAppManagerUid(ctx, g.config.Share.IMAdminUserID) {
@@ -1769,6 +1952,34 @@ func (g *groupServer) SetGroupInfo(ctx context.Context, req *pbgroup.SetGroupInf
 	return &pbgroup.SetGroupInfoResp{}, nil
 }
 
+// SetGroupInfoEx 设置群组信息扩展版本
+//
+// 此方法是SetGroupInfo的扩展版本，支持更灵活的字段更新控制。
+// 使用包装器类型允许精确控制哪些字段需要更新，包括设置空值。
+//
+// 业务逻辑：
+// 1. 权限验证：验证操作者是否有权限修改群组信息
+// 2. Webhook回调：执行修改前的业务逻辑扩展
+// 3. 群组状态检查：确认群组存在且未解散
+// 4. 字段映射：使用包装器类型精确控制更新字段
+// 5. 数据库更新：批量更新指定的字段
+// 6. 通知处理：根据更新的字段发送相应通知
+// 7. Webhook回调：执行修改后的业务逻辑扩展
+//
+// 与SetGroupInfo的区别：
+// - 使用包装器类型，支持NULL值设置
+// - 更精确的字段控制
+// - 分别处理公告、群名称和其他字段的通知
+//
+// 字段处理逻辑：
+// - 公告字段：设置会话@类型，发送公告通知
+// - 群名称：发送专门的名称变更通知
+// - 其他字段：发送通用的信息变更通知
+//
+// 权限规则：
+// - 群主：可以修改所有群组信息
+// - 管理员：可以修改所有群组信息
+// - 系统管理员：可以修改任何群组信息
 func (g *groupServer) SetGroupInfoEx(ctx context.Context, req *pbgroup.SetGroupInfoExReq) (*pbgroup.SetGroupInfoExResp, error) {
 	var opMember *model.GroupMember
 
@@ -1883,6 +2094,39 @@ func (g *groupServer) SetGroupInfoEx(ctx context.Context, req *pbgroup.SetGroupI
 	return &pbgroup.SetGroupInfoExResp{}, nil
 }
 
+// TransferGroupOwner 转让群主
+//
+// 此方法用于将群主身份转让给其他群组成员。这是一个重要的管理操作，
+// 涉及权限的重新分配和角色的变更。
+//
+// 业务逻辑：
+// 1. 群组状态检查：确认群组存在且未解散
+// 2. 参数验证：新旧群主不能是同一人
+// 3. 成员验证：确认新旧群主都是群组成员
+// 4. 权限验证：验证操作者是否有权限进行转让
+// 5. 禁言检查：如果新群主被禁言，自动解除禁言
+// 6. 角色转换：执行群主身份的转让
+// 7. 通知发送：向群组成员发送群主变更通知
+// 8. Webhook回调：执行转让后的业务逻辑扩展
+//
+// 权限规则：
+// - 只有当前群主可以转让群主身份
+// - 系统管理员可以强制转让任何群组的群主
+//
+// 特殊处理：
+// - 新群主如果处于禁言状态，会自动解除
+// - 原群主身份会降级为普通成员或管理员
+// - 转让操作不可撤销
+//
+// 安全考虑：
+// - 验证新群主确实是群组成员
+// - 防止转让给不存在的用户
+// - 确保操作的原子性
+//
+// 业务影响：
+// - 群主拥有所有群组管理权限
+// - 转让后原群主失去特殊权限
+// - 影响后续的权限验证和操作
 func (g *groupServer) TransferGroupOwner(ctx context.Context, req *pbgroup.TransferGroupOwnerReq) (*pbgroup.TransferGroupOwnerResp, error) {
 	group, err := g.db.TakeGroup(ctx, req.GroupID)
 	if err != nil {
@@ -2168,6 +2412,38 @@ func (g *groupServer) DismissGroup(ctx context.Context, req *pbgroup.DismissGrou
 	return &pbgroup.DismissGroupResp{}, nil
 }
 
+// MuteGroupMember 禁言群组成员
+//
+// 此方法用于对群组成员进行禁言处理，设置禁言截止时间。
+// 被禁言的成员在禁言期间无法在群组中发送消息。
+//
+// 业务逻辑：
+// 1. 成员信息获取：获取被禁言成员的详细信息
+// 2. 权限验证：验证操作者是否有权限禁言该成员
+// 3. 禁言时间设置：计算禁言截止时间
+// 4. 数据库更新：更新成员的禁言截止时间
+// 5. 通知发送：向群组发送成员被禁言通知
+//
+// 权限规则：
+// - 群主：可以禁言任何成员（除自己外）
+// - 管理员：可以禁言普通成员，不能禁言群主和其他管理员
+// - 普通成员：无禁言权限
+// - 系统管理员：可以禁言任何成员
+//
+// 禁言规则：
+// - 群主不能被禁言
+// - 管理员只能被群主禁言
+// - 普通成员可以被群主和管理员禁言
+//
+// 时间处理：
+// - 支持设置任意时长的禁言
+// - 禁言时间以秒为单位
+// - 禁言时间为0表示永久禁言
+//
+// 业务影响：
+// - 被禁言成员无法发送群消息
+// - 禁言状态会同步到所有客户端
+// - 禁言到期后自动解除
 func (g *groupServer) MuteGroupMember(ctx context.Context, req *pbgroup.MuteGroupMemberReq) (*pbgroup.MuteGroupMemberResp, error) {
 	member, err := g.db.TakeGroupMember(ctx, req.GroupID, req.UserID)
 	if err != nil {
@@ -2202,6 +2478,36 @@ func (g *groupServer) MuteGroupMember(ctx context.Context, req *pbgroup.MuteGrou
 	return &pbgroup.MuteGroupMemberResp{}, nil
 }
 
+// CancelMuteGroupMember 取消群组成员禁言
+//
+// 此方法用于解除群组成员的禁言状态，恢复其在群组中的发言权限。
+//
+// 业务逻辑：
+// 1. 成员信息获取：获取被禁言成员的详细信息
+// 2. 权限验证：验证操作者是否有权限解除该成员的禁言
+// 3. 禁言状态清除：将成员的禁言截止时间设置为历史时间
+// 4. 数据库更新：更新成员的禁言状态
+// 5. 通知发送：向群组发送成员解除禁言通知
+//
+// 权限规则：
+// - 群主：可以解除任何成员的禁言
+// - 管理员：可以解除普通成员的禁言，不能解除群主和其他管理员的禁言
+// - 普通成员：无解除禁言权限
+// - 系统管理员：可以解除任何成员的禁言
+//
+// 解除规则：
+// - 只有被禁言的成员才需要解除
+// - 解除后成员立即恢复发言权限
+// - 解除操作会发送通知给所有群成员
+//
+// 特殊处理：
+// - 如果成员本来就没有被禁言，操作仍然会成功
+// - 权限验证与禁言时的规则保持一致
+//
+// 业务影响：
+// - 成员恢复群组发言权限
+// - 禁言状态同步到所有客户端
+// - 操作记录用于审计
 func (g *groupServer) CancelMuteGroupMember(ctx context.Context, req *pbgroup.CancelMuteGroupMemberReq) (*pbgroup.CancelMuteGroupMemberResp, error) {
 	member, err := g.db.TakeGroupMember(ctx, req.GroupID, req.UserID)
 	if err != nil {
@@ -2242,6 +2548,35 @@ func (g *groupServer) CancelMuteGroupMember(ctx context.Context, req *pbgroup.Ca
 	return &pbgroup.CancelMuteGroupMemberResp{}, nil
 }
 
+// MuteGroup 禁言整个群组
+//
+// 此方法用于对整个群组进行禁言，禁言后除了群主和管理员外，
+// 其他成员都无法在群组中发送消息。
+//
+// 业务逻辑：
+// 1. 权限验证：验证操作者是否有群组管理权限
+// 2. 群组状态更新：将群组状态设置为禁言状态
+// 3. 通知发送：向群组成员发送群组被禁言通知
+//
+// 权限规则：
+// - 群主：可以对群组进行全员禁言
+// - 管理员：可以对群组进行全员禁言
+// - 系统管理员：可以对任何群组进行全员禁言
+//
+// 禁言效果：
+// - 普通成员无法发送消息
+// - 群主和管理员仍可正常发言
+// - 群组其他功能不受影响
+//
+// 业务影响：
+// - 群组进入静默状态
+// - 有助于群组秩序管理
+// - 可用于重要通知发布时
+//
+// 使用场景：
+// - 群组秩序维护
+// - 重要公告发布
+// - 临时管理需要
 func (g *groupServer) MuteGroup(ctx context.Context, req *pbgroup.MuteGroupReq) (*pbgroup.MuteGroupResp, error) {
 	if err := g.CheckGroupAdmin(ctx, req.GroupID); err != nil {
 		return nil, err
@@ -2253,6 +2588,39 @@ func (g *groupServer) MuteGroup(ctx context.Context, req *pbgroup.MuteGroupReq) 
 	return &pbgroup.MuteGroupResp{}, nil
 }
 
+// CancelMuteGroup 取消群组禁言
+//
+// 此方法用于解除整个群组的禁言状态，恢复所有成员的发言权限。
+//
+// 业务逻辑：
+// 1. 权限验证：验证操作者是否有群组管理权限
+// 2. 群组状态更新：将群组状态设置为正常状态
+// 3. 通知发送：向群组成员发送群组解除禁言通知
+//
+// 权限规则：
+// - 群主：可以解除群组全员禁言
+// - 管理员：可以解除群组全员禁言
+// - 系统管理员：可以解除任何群组的全员禁言
+//
+// 解除效果：
+// - 所有成员恢复发言权限
+// - 群组回到正常状态
+// - 个人禁言不受影响（个人禁言需要单独解除）
+//
+// 注意事项：
+// - 解除群组禁言不会影响个人的禁言状态
+// - 如果成员同时有个人禁言，仍然无法发言
+// - 解除操作会通知所有群成员
+//
+// 业务影响：
+// - 群组恢复正常交流状态
+// - 所有成员可以正常发送消息
+// - 群组功能完全恢复
+//
+// 使用场景：
+// - 临时管理结束
+// - 重要通知发布完毕
+// - 群组秩序恢复正常
 func (g *groupServer) CancelMuteGroup(ctx context.Context, req *pbgroup.CancelMuteGroupReq) (*pbgroup.CancelMuteGroupResp, error) {
 	if err := g.CheckGroupAdmin(ctx, req.GroupID); err != nil {
 		return nil, err
@@ -2264,6 +2632,46 @@ func (g *groupServer) CancelMuteGroup(ctx context.Context, req *pbgroup.CancelMu
 	return &pbgroup.CancelMuteGroupResp{}, nil
 }
 
+// SetGroupMemberInfo 设置群组成员信息
+//
+// 此方法用于修改群组成员的信息，包括群内昵称、头像、角色等级、扩展字段等。
+// 支持批量修改多个成员的信息，并具有严格的权限控制。
+//
+// 业务逻辑：
+// 1. 参数验证：成员列表非空，成员信息有效
+// 2. 权限验证：复杂的多层权限验证逻辑
+// 3. 数据验证：成员存在性验证，角色等级有效性检查
+// 4. Webhook回调：执行修改前的业务逻辑扩展
+// 5. 批量更新：使用事务进行批量数据更新
+// 6. 通知发送：根据修改内容发送相应通知
+// 7. Webhook回调：执行修改后的业务逻辑扩展
+//
+// 权限规则（复杂的层级权限控制）：
+// - 系统管理员：可以修改任何成员的任何信息
+// - 群主：可以修改所有成员信息，但不能提升自己的角色
+// - 管理员：可以修改普通成员信息，不能修改群主和其他管理员
+// - 普通成员：只能修改自己的非角色信息
+//
+// 可修改字段：
+// - 群内昵称：成员在群组中显示的昵称
+// - 群内头像：成员在群组中显示的头像
+// - 角色等级：普通成员、管理员（不能设置为群主）
+// - 扩展字段：自定义的扩展信息
+//
+// 角色变更规则：
+// - 不能设置为群主（群主转让需要专门接口）
+// - 普通成员 ↔ 管理员 可以互相转换
+// - 角色变更会发送专门的角色变更通知
+//
+// 特殊处理：
+// - 支持批量操作，减少网络开销
+// - 严格的权限验证，防止权限提升攻击
+// - 分别处理角色变更和信息变更的通知
+//
+// 安全考虑：
+// - 防止用户提升自己的权限
+// - 防止管理员修改其他管理员信息
+// - 确保群主身份不被误修改
 func (g *groupServer) SetGroupMemberInfo(ctx context.Context, req *pbgroup.SetGroupMemberInfoReq) (*pbgroup.SetGroupMemberInfoResp, error) {
 	if len(req.Members) == 0 {
 		return nil, errs.ErrArgs.WrapMsg("members empty")
@@ -2477,6 +2885,40 @@ func (g *groupServer) GetUserInGroupMembers(ctx context.Context, req *pbgroup.Ge
 	}, nil
 }
 
+// GetGroupMemberUserIDs 获取群组成员用户ID列表
+//
+// 此方法用于获取指定群组的所有成员用户ID列表，主要用于消息推送、
+// 通知发送等需要群组成员ID列表的场景。
+//
+// 业务逻辑：
+// 1. 数据查询：查询群组的所有成员用户ID
+// 2. 权限验证：验证操作者是否有权限获取该群组成员列表
+// 3. 结果返回：返回用户ID列表
+//
+// 权限验证：
+// - 系统管理员：可以获取任何群组的成员ID列表
+// - 群组成员：只能获取自己所在群组的成员ID列表
+// - 非群组成员：无权限获取
+//
+// 使用场景：
+// - 群组消息推送
+// - 群组通知发送
+// - 群组统计分析
+// - 权限验证辅助
+//
+// 性能考虑：
+// - 只返回用户ID，不包含详细信息
+// - 适用于大群组的高效查询
+// - 减少网络传输数据量
+//
+// 安全考虑：
+// - 严格的权限验证
+// - 防止非授权访问群组成员信息
+// - 操作者必须是群组成员或系统管理员
+//
+// 返回数据：
+// - 群组所有成员的用户ID列表
+// - 按加入时间或其他规则排序
 func (g *groupServer) GetGroupMemberUserIDs(ctx context.Context, req *pbgroup.GetGroupMemberUserIDsReq) (*pbgroup.GetGroupMemberUserIDsResp, error) {
 	userIDs, err := g.db.FindGroupMemberUserID(ctx, req.GroupID)
 	if err != nil {
